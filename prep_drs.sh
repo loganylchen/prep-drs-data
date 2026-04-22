@@ -108,6 +108,15 @@ stage_prepare_dirs() {
 
 stage_basecalling() {
   local basecall_input
+  local final_fq="${FASTQ_DIR}/pass.fq.gz"
+
+  # Per-stage resume: if fastq already exists and is non-empty, skip.
+  # Lets users recover from a downstream crash (e.g. signal-convert, QC)
+  # without redoing the multi-hour basecalling step.
+  if [[ ${FORCE} -eq 0 && -s "${final_fq}" ]]; then
+    log_info "[basecall] ${final_fq} already exists; skipping basecalling (use --force to re-run)"
+    return 0
+  fi
 
   case "${KIT}" in
     rna001|rna002)
@@ -163,6 +172,14 @@ stage_fastq_integrity() {
 }
 
 stage_signal_convert() {
+  local final_b5="${BLOW5_DIR}/nanopore.drs.blow5"
+
+  # Per-stage resume: if merged blow5 already exists, skip conversion.
+  if [[ ${FORCE} -eq 0 && -s "${final_b5}" ]]; then
+    log_info "[signal] ${final_b5} already exists; skipping fast5/pod5->blow5 (use --force to re-run)"
+    return 0
+  fi
+
   local parts_dir="${TMP_DIR}/blow5_parts"
   mkdir -p "${parts_dir}"
 
@@ -176,7 +193,14 @@ stage_signal_convert() {
 }
 
 stage_blow5_merge() {
-  merge_blow5 "${TMP_DIR}/blow5_parts" "${BLOW5_DIR}/nanopore.drs.blow5" "${THREADS}" \
+  local final_b5="${BLOW5_DIR}/nanopore.drs.blow5"
+
+  if [[ ${FORCE} -eq 0 && -s "${final_b5}" ]]; then
+    log_info "[signal] ${final_b5} already exists; skipping merge"
+    return 0
+  fi
+
+  merge_blow5 "${TMP_DIR}/blow5_parts" "${final_b5}" "${THREADS}" \
     || die 6 "blow5 merge failed"
 }
 

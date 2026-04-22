@@ -32,8 +32,12 @@ _run_dorado_pipeline() {
 
     "${binary}" basecaller "${model_ref}" "${input_dir}" --emit-fastq --min-qscore 7 \
         | pigz -p "${threads}" > "${output_fastq_gz}"
-    local _bc_status="${PIPESTATUS[0]}"
-    local _pigz_status="${PIPESTATUS[1]}"
+    # Snapshot PIPESTATUS in ONE expansion. Any subsequent command (including
+    # `local foo=${PIPESTATUS[0]}`) resets PIPESTATUS, which then trips
+    # `set -u` when we try to read [1]. This exact bug cost us a 2h run.
+    local _pipe_status=( "${PIPESTATUS[@]}" )
+    local _bc_status="${_pipe_status[0]:-0}"
+    local _pigz_status="${_pipe_status[1]:-0}"
 
     eval "${_prev_pipefail}"
 
