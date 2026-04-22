@@ -1,0 +1,35 @@
+# OMC state / plans / memory (internal; not part of the pipeline)
+.omc/
+.claude/
+
+# Pipeline runtime artifacts
+*.tmp/
+.tmp/
+*.log
+
+# The guppy tarball is large & license-restricted — must NOT be committed
+ont-guppy_*.tar.gz
+ont-guppy_*.tar
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Test output / fixtures with real data
+test/fixtures/fast5_*/
+test/fixtures/pod5_*/
+test/fixtures/*.fast5
+test/fixtures/*.pod5
+test/fixtures/expected_output/
+
+# Docker build artifacts
+*.tar
