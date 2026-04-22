@@ -57,12 +57,18 @@ RUN mkdir -p "${DORADO_MODELS_DIR}" \
 RUN dorado-legacy download --model rna002_70bps_hac@v3 --directory "${DORADO_MODELS_DIR}"
 
 # ── 5. slow5tools 1.4.0 ───────────────────────────────────────────────────────
+# Use --strip-components=1 so the extracted path is /opt/slow5tools/ regardless
+# of the tarball's internal directory name (which has historically varied:
+# slow5tools-v1.4.0/ vs slow5tools-v1.4.0-x86_64-linux-binaries/ vs ...).
+# Also verify the binary actually runs so image build fails fast if broken.
 RUN set -eux; \
     wget -q -O /tmp/slow5tools.tar.gz \
         "https://github.com/hasindu2008/slow5tools/releases/download/v1.4.0/slow5tools-v1.4.0-x86_64-linux-binaries.tar.gz"; \
-    tar -xzf /tmp/slow5tools.tar.gz -C /opt/; \
+    mkdir -p /opt/slow5tools; \
+    tar -xzf /tmp/slow5tools.tar.gz -C /opt/slow5tools --strip-components=1; \
     rm /tmp/slow5tools.tar.gz; \
-    ln -s /opt/slow5tools-v1.4.0-x86_64-linux-binaries/slow5tools /usr/local/bin/slow5tools
+    ln -sf /opt/slow5tools/slow5tools /usr/local/bin/slow5tools; \
+    /usr/local/bin/slow5tools --version
 
 # ── 6. Python tools ───────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir \
