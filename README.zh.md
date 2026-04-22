@@ -180,6 +180,7 @@ docker run --rm --gpus all \
 | `--force` | 关 | 即使输出已存在也重跑 |
 | `--keep-tmp` | 关 | 保留中间文件目录 `.tmp`（调试用） |
 | `--skip-qc` | 关 | 跳过 QC 报告生成（NanoPlot + slow5tools stats） |
+| `--prefer-pod5` | 关 | RNA001/RNA002 + fast5 输入时，先在 `.tmp/` 里把 fast5 转成 pod5 再 basecall。数据加载通常快 15–30%，但需额外磁盘（≈ 输入大小）。对 RNA004（已走 pod5）或 pod5 输入无效。 |
 | `--help` | — | 打印帮助并退出 |
 
 > **注意 `--sample` 的安全限制**：不允许出现 `/`、`.`、`..`、控制字符。

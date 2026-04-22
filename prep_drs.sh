@@ -65,8 +65,11 @@ stage_validate_deps() {
   fi
 
   # fast5 input + rna004 → needs pod5 CLI for fast5→pod5 conversion
-  # (dorado-legacy accepts fast5 natively, so rna001/002 need no pod5 CLI)
+  # (dorado-legacy accepts fast5 natively, so rna001/002 only need pod5 CLI
+  #  when the user opts in via --prefer-pod5)
   if [[ "${INPUT_FORMAT}" == "fast5" && "${KIT}" == "rna004" ]]; then
+    tools+=(pod5)
+  elif [[ "${INPUT_FORMAT}" == "fast5" && "${PREFER_POD5}" -eq 1 ]]; then
     tools+=(pod5)
   fi
 
@@ -109,7 +112,16 @@ stage_basecalling() {
   case "${KIT}" in
     rna001|rna002)
       # dorado-legacy (0.9.6) accepts both fast5 and pod5 natively.
-      basecall_input="${INPUT}"
+      # pod5 is typically 15-30% faster on the data-loading path, so if the
+      # user opts in via --prefer-pod5 and the input is fast5, convert first.
+      if [[ "${INPUT_FORMAT}" == "fast5" && "${PREFER_POD5}" -eq 1 ]]; then
+        log_info "[basecall] --prefer-pod5 set: converting fast5 -> pod5 before dorado-legacy"
+        convert_fast5_to_pod5 "${INPUT}" "${TMP_DIR}/pod5_converted" \
+          || die 5 "fast5->pod5 conversion failed"
+        basecall_input="${TMP_DIR}/pod5_converted"
+      else
+        basecall_input="${INPUT}"
+      fi
 
       run_dorado_legacy_basecall \
         "${basecall_input}" \

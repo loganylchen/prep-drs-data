@@ -192,6 +192,7 @@ docker run --rm --gpus all \
 | `--force` | off | re-run even if outputs already exist |
 | `--keep-tmp` | off | keep `.tmp/` workspace (for debugging) |
 | `--skip-qc` | off | skip the NanoPlot + slow5tools stats QC report |
+| `--prefer-pod5` | off | for RNA001/RNA002 + fast5 input, convert fast5→pod5 in `.tmp/` before basecalling. Typically 15–30% faster data loading, but needs extra disk (~= input size). No effect for RNA004 (already pod5) or pod5 input. |
 | `--help` | — | print help and exit |
 
 > **Security note on `--sample`**: the value must be a simple directory name.

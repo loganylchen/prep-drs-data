@@ -114,6 +114,9 @@ Options:
   --force             Re-run even if outputs exist
   --keep-tmp          Preserve .tmp workspace after completion
   --skip-qc           Skip NanoPlot + slow5tools stats QC report
+  --prefer-pod5       For RNA001/RNA002 + fast5 input, convert fast5->pod5
+                      in .tmp/ before basecalling (typically 15-30% faster,
+                      but needs extra disk ~= input size)
   --help              Print this help and exit
 
 Exit codes: 0 success, 1 args, 2 missing deps, 3 no GPU,
@@ -140,6 +143,7 @@ parse_args() {
     FORCE=0
     KEEP_TMP=0
     SKIP_QC=0
+    PREFER_POD5=0
 
     while [[ $# -gt 0 ]]; do
         local key="$1"
@@ -190,6 +194,10 @@ parse_args() {
                 ;;
             --skip-qc)
                 SKIP_QC=1
+                shift
+                ;;
+            --prefer-pod5)
+                PREFER_POD5=1
                 shift
                 ;;
             --help)
@@ -247,5 +255,5 @@ parse_args() {
         exit 4
     fi
 
-    log_info "Arguments parsed: sample=${SAMPLE} input=${INPUT} kit=${KIT} output=${OUTPUT} threads=${THREADS} model-tier=${MODEL_TIER} device=${DEVICE} copy=${COPY_MODE} zstd=${ZSTD} force=${FORCE} keep-tmp=${KEEP_TMP} skip-qc=${SKIP_QC}"
+    log_info "Arguments parsed: sample=${SAMPLE} input=${INPUT} kit=${KIT} output=${OUTPUT} threads=${THREADS} model-tier=${MODEL_TIER} device=${DEVICE} copy=${COPY_MODE} zstd=${ZSTD} force=${FORCE} keep-tmp=${KEEP_TMP} skip-qc=${SKIP_QC} prefer-pod5=${PREFER_POD5}"
 }
