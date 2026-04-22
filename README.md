@@ -19,14 +19,15 @@ dependencies are bundled in a single Docker image.
 6. [CLI reference](#cli-reference)
 7. [Common scenarios](#common-scenarios)
 8. [Running locally (without Docker)](#running-locally-without-docker)
-9. [Batch processing](#batch-processing)
-10. [Verifying outputs](#verifying-outputs)
-11. [Troubleshooting](#troubleshooting)
-12. [Exit codes](#exit-codes)
-13. [Pipeline stages](#pipeline-stages)
-14. [Project structure](#project-structure)
-15. [Testing](#testing)
-16. [Continuous integration / Docker Hub](#continuous-integration--docker-hub)
+9. [Running with Singularity / Apptainer](#running-with-singularity--apptainer)
+10. [Batch processing](#batch-processing)
+11. [Verifying outputs](#verifying-outputs)
+12. [Troubleshooting](#troubleshooting)
+13. [Exit codes](#exit-codes)
+14. [Pipeline stages](#pipeline-stages)
+15. [Project structure](#project-structure)
+16. [Testing](#testing)
+17. [Continuous integration / Docker Hub](#continuous-integration--docker-hub)
 
 ---
 
@@ -293,6 +294,86 @@ Which tools are actually required depends on the input format and kit:
 | rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
 
 > `NanoPlot` is only needed when `--skip-qc` is not passed.
+
+---
+
+## Running with Singularity / Apptainer
+
+HPC clusters usually disallow Docker. Singularity (now Apptainer) can pull
+the same image from Docker Hub and runs it with minor flag differences.
+
+| Docker | Singularity / Apptainer |
+|--------|-------------------------|
+| `--gpus all` | `--nv` |
+| `-v host:container[:ro]` | `-B host:container[:ro]` (or `--bind`) |
+| container rootfs writable | read-only by default (outputs must go to a bind mount) |
+
+### Pull the image (once)
+
+```bash
+# Creates prep-drs.sif (~9–13 GB)
+singularity pull prep-drs.sif docker://<your-docker-hub-user>/prep-drs-data:latest
+```
+
+You can also run `docker://...` directly without a `.sif`, but it re-extracts
+every time.
+
+### Run one sample
+
+```bash
+singularity run --nv \
+  -B /data/seq/run_2025_03:/in:ro \
+  -B /data/drs_prep:/out \
+  prep-drs.sif \
+  --sample PatientB_RNA004 \
+  --input /in \
+  --kit rna004 \
+  --output /out
+```
+
+The Dockerfile's `ENTRYPOINT ["/usr/local/bin/prep_drs.sh"]` is honoured by
+`singularity run`, so arguments after the image name are passed straight to
+`prep_drs.sh`.
+
+### SLURM template
+
+```bash
+#!/bin/bash
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --time=12:00:00
+
+module load singularity    # or apptainer, depending on the cluster
+
+SIF=/shared/images/prep-drs.sif
+IN=/scratch/$USER/run_2025_03
+OUT=/scratch/$USER/drs_prep
+
+singularity run --nv \
+  -B "${IN}":/in:ro \
+  -B "${OUT}":/out \
+  "${SIF}" \
+  --sample "${SLURM_JOB_NAME}" \
+  --input /in \
+  --kit rna004 \
+  --output /out \
+  --threads "${SLURM_CPUS_PER_TASK}"
+```
+
+### Common pitfalls
+
+1. **GPU invisible**: `--nv` missing, or the node lacks `nvidia-container-cli`.
+   Sanity check with `singularity exec --nv prep-drs.sif nvidia-smi`.
+2. **`$HOME` / `$PWD` auto-bind shadows container paths**: use `--no-home` or
+   `--containall` for stricter isolation.
+3. **Cache fills up `~/.singularity/cache`**: clean with
+   `singularity cache clean` after the first pull.
+4. **Cannot write to `/out`**: the container runs as the host UID, not as
+   root. Make sure the bind-mounted host directory is writable by your user.
+5. **`.tmp/` placement**: `prep_drs.sh` puts `.tmp/` under
+   `${OUTPUT}/${SAMPLE}/.tmp`, so as long as `/out` is writable no extra
+   bind is needed.
 
 ---
 

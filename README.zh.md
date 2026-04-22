@@ -19,14 +19,15 @@
 6. [CLI 参数说明](#cli-参数说明)
 7. [典型使用场景](#典型使用场景)
 8. [本地运行（不用 Docker）](#本地运行不用-docker)
-9. [批量处理多个样品](#批量处理多个样品)
-10. [输出验证](#输出验证)
-11. [常见问题排查](#常见问题排查)
-12. [退出码含义](#退出码含义)
-13. [流程内部阶段](#流程内部阶段)
-14. [项目结构](#项目结构)
-15. [测试](#测试)
-16. [持续集成 / Docker Hub 自动发布](#持续集成--docker-hub-自动发布)
+9. [用 Singularity / Apptainer 跑](#用-singularity--apptainer-跑)
+10. [批量处理多个样品](#批量处理多个样品)
+11. [输出验证](#输出验证)
+12. [常见问题排查](#常见问题排查)
+13. [退出码含义](#退出码含义)
+14. [流程内部阶段](#流程内部阶段)
+15. [项目结构](#项目结构)
+16. [测试](#测试)
+17. [持续集成 / Docker Hub 自动发布](#持续集成--docker-hub-自动发布)
 
 ---
 
@@ -276,6 +277,82 @@ cd /path/to/prep-drs-data
 | rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
 
 > `NanoPlot` 仅在不加 `--skip-qc` 时需要。
+
+---
+
+## 用 Singularity / Apptainer 跑
+
+HPC 集群通常不允许跑 Docker。Singularity（现在也叫 Apptainer）可以直接拉 Docker Hub 上
+构建好的镜像，只是参数和 Docker 有点区别：
+
+| Docker | Singularity / Apptainer |
+|--------|-------------------------|
+| `--gpus all` | `--nv` |
+| `-v host:container[:ro]` | `-B host:container[:ro]`（或 `--bind`） |
+| 容器根文件系统可写 | 默认只读（输出必须写到 bind mount 里） |
+
+### 拉镜像（一次性）
+
+```bash
+# 生成 prep-drs.sif（约 9–13 GB）
+singularity pull prep-drs.sif docker://<your-docker-hub-user>/prep-drs-data:latest
+```
+
+也可以运行时直接用 `docker://...` 不保存 sif 文件，但每次都要解包，慢。
+
+### 跑一个样品
+
+```bash
+singularity run --nv \
+  -B /data/seq/run_2025_03:/in:ro \
+  -B /data/drs_prep:/out \
+  prep-drs.sif \
+  --sample PatientB_RNA004 \
+  --input /in \
+  --kit rna004 \
+  --output /out
+```
+
+Dockerfile 里的 `ENTRYPOINT ["/usr/local/bin/prep_drs.sh"]` 在 `singularity run` 下
+依然生效，镜像名后面跟的参数会直接传给 `prep_drs.sh`。
+
+### SLURM 提交模板
+
+```bash
+#!/bin/bash
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --time=12:00:00
+
+module load singularity    # 或 apptainer，看集群怎么装的
+
+SIF=/shared/images/prep-drs.sif
+IN=/scratch/$USER/run_2025_03
+OUT=/scratch/$USER/drs_prep
+
+singularity run --nv \
+  -B "${IN}":/in:ro \
+  -B "${OUT}":/out \
+  "${SIF}" \
+  --sample "${SLURM_JOB_NAME}" \
+  --input /in \
+  --kit rna004 \
+  --output /out \
+  --threads "${SLURM_CPUS_PER_TASK}"
+```
+
+### 常见坑
+
+1. **GPU 看不到**：忘了加 `--nv`，或者节点上没装 `nvidia-container-cli`。
+   可以先 `singularity exec --nv prep-drs.sif nvidia-smi` 验证。
+2. **`$HOME` / `$PWD` 被自动 bind 覆盖了容器里的路径**：加 `--no-home` 或
+   `--containall` 做严格隔离。
+3. **`~/.singularity/cache` 被塞满**：第一次 pull 完可以 `singularity cache clean`。
+4. **写不进 `/out`**：Singularity 以宿主机 UID 运行（不是容器里的 root），
+   确保 bind 的宿主机目录对当前用户可写。
+5. **`.tmp/` 位置**：`prep_drs.sh` 把 `.tmp/` 放在 `${OUTPUT}/${SAMPLE}/.tmp`，
+   所以只要 `/out` 可写就够了，不需要额外 bind。
 
 ---
 
