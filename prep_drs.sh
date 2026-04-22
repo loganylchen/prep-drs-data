@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prep_drs.sh — Nanopore DRS data preparation pipeline.
 # Converts fast5/pod5 raw data into {fastq/pass.fq.gz, blow5/nanopore.drs.blow5, pod5|fast5/}
-# Uses guppy for rna001/002, dorado for rna004.
+# Basecallers: dorado-legacy (v0.9.6) for rna001/002, dorado (current) for rna004.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,22 +46,21 @@ stage_validate_deps() {
 
   case "${KIT}" in
     rna001|rna002)
-      tools+=(guppy_basecaller)
+      tools+=(dorado-legacy)
       ;;
     rna004)
       tools+=(dorado)
       ;;
   esac
 
+  # pod5 input → needs blue-crab for signal conversion
   if [[ "${INPUT_FORMAT}" == "pod5" ]]; then
     tools+=(blue-crab)
   fi
 
-  # pod5 input with guppy needs pod5 CLI for fast5 conversion
-  # fast5 input with dorado needs pod5 CLI for pod5 conversion
-  if [[ "${INPUT_FORMAT}" == "pod5" && "${KIT}" != "rna004" ]]; then
-    tools+=(pod5)
-  elif [[ "${INPUT_FORMAT}" == "fast5" && "${KIT}" == "rna004" ]]; then
+  # fast5 input + rna004 → needs pod5 CLI for fast5→pod5 conversion
+  # (dorado-legacy accepts fast5 natively, so rna001/002 need no pod5 CLI)
+  if [[ "${INPUT_FORMAT}" == "fast5" && "${KIT}" == "rna004" ]]; then
     tools+=(pod5)
   fi
 
@@ -94,31 +93,24 @@ stage_basecalling() {
 
   case "${KIT}" in
     rna001|rna002)
-      if [[ "${INPUT_FORMAT}" == "pod5" ]]; then
-        log_info "[basecall] pod5 input with guppy — converting pod5 -> fast5 first"
-        convert_pod5_to_fast5 "${INPUT}" "${TMP_DIR}/fast5_converted"
-        basecall_input="${TMP_DIR}/fast5_converted"
-      else
-        basecall_input="${INPUT}"
-      fi
+      # dorado-legacy (0.9.6) accepts both fast5 and pod5 natively.
+      basecall_input="${INPUT}"
 
-      mkdir -p "${TMP_DIR}/basecalled"
-      run_guppy_basecall \
+      run_dorado_legacy_basecall \
         "${basecall_input}" \
-        "${TMP_DIR}/basecalled" \
+        "${FASTQ_DIR}/pass.fq.gz" \
         "${KIT}" \
         "${MODEL_TIER}" \
-        "${DEVICE}" \
-        || die 5 "guppy basecalling failed"
-
-      merge_guppy_fastq "${TMP_DIR}/basecalled" "${FASTQ_DIR}/pass.fq.gz" \
-        || die 5 "fastq merge failed"
+        "${THREADS}" \
+        || die 5 "dorado-legacy basecalling failed"
       ;;
 
     rna004)
+      # Current dorado only accepts pod5 — convert fast5 first if needed.
       if [[ "${INPUT_FORMAT}" == "fast5" ]]; then
         log_info "[basecall] fast5 input with dorado — converting fast5 -> pod5 first"
-        convert_fast5_to_pod5 "${INPUT}" "${TMP_DIR}/pod5_converted"
+        convert_fast5_to_pod5 "${INPUT}" "${TMP_DIR}/pod5_converted" \
+          || die 5 "fast5->pod5 conversion failed"
         basecall_input="${TMP_DIR}/pod5_converted"
       else
         basecall_input="${INPUT}"
@@ -168,8 +160,6 @@ stage_blow5_integrity() {
 
 stage_move_raw() {
   log_info "[raw] ${COPY_MODE:+copying}${COPY_MODE:-moving} raw files to ${RAW_DIR}"
-  local op="mv"
-  [[ ${COPY_MODE} -eq 1 ]] && op="cp -r"
   # Use find to handle nested layouts
   while IFS= read -r -d '' f; do
     if [[ ${COPY_MODE} -eq 1 ]]; then

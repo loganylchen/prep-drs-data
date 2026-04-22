@@ -28,8 +28,7 @@ docker run --rm --gpus all \
   --kit rna004 \
   --output /out
 
-# Example 3: RNA002 pod5 (cross-format conversion)
-# Script auto-converts pod5->fast5 for guppy.
+# Example 3: RNA002 pod5 (dorado-legacy 0.9.6 accepts pod5 natively — no conversion needed)
 docker run --rm --gpus all \
   -v /data/run3/pod5:/in:ro \
   -v "${OUT}":/out \

@@ -7,10 +7,6 @@
 .tmp/
 *.log
 
-# The guppy tarball is large & license-restricted — must NOT be committed
-ont-guppy_*.tar.gz
-ont-guppy_*.tar
-
 # OS / editor cruft
 .DS_Store
 Thumbs.db

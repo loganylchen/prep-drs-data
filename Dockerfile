@@ -1,6 +1,6 @@
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 LABEL maintainer="Nanopore DRS Prep Pipeline"
-LABEL description="Bundles guppy, dorado, slow5tools, blue-crab, pod5 for Nanopore DRS data prep"
+LABEL description="Bundles dorado (two versions), slow5tools, blue-crab, pod5 for Nanopore DRS data prep"
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
@@ -26,36 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 2. Guppy 6.5.7 (OPTIONAL — ONT-gated distribution) ───────────────────────
-# Pass a signed download URL at build time:
-#   docker build --build-arg GUPPY_URL="https://..." .
-# Or place ont-guppy_6.5.7_linux64.tar.gz in the build context beforehand.
-# If neither is provided the layer prints a warning and continues; dorado covers
-# RNA004 basecalling so guppy is not required for that workflow.
-ARG GUPPY_URL=""
-COPY ont-guppy_6.5.7_linux64.tar.gz* /tmp/
-RUN set -eux; \
-    GUPPY_ARCHIVE=""; \
-    if [ -n "${GUPPY_URL}" ]; then \
-        wget -q -O /tmp/ont-guppy_6.5.7_linux64.tar.gz "${GUPPY_URL}"; \
-        GUPPY_ARCHIVE="/tmp/ont-guppy_6.5.7_linux64.tar.gz"; \
-    elif FOUND=$(find /tmp -maxdepth 1 -name 'ont-guppy*.tar.gz' 2>/dev/null | head -1) && [ -n "${FOUND}" ]; then \
-        GUPPY_ARCHIVE="${FOUND}"; \
-    fi; \
-    if [ -n "${GUPPY_ARCHIVE}" ]; then \
-        mkdir -p /opt/ont-guppy; \
-        tar -xzf "${GUPPY_ARCHIVE}" -C /opt/ont-guppy --strip-components=1; \
-        rm -f "${GUPPY_ARCHIVE}"; \
-        echo "Guppy installed to /opt/ont-guppy"; \
-    else \
-        echo "WARNING: Guppy tarball not found and GUPPY_URL not set — skipping guppy install." \
-             "Pass --build-arg GUPPY_URL=<url> or place ont-guppy_6.5.7_linux64.tar.gz in the build context."; \
-    fi
-
-ENV PATH="/opt/ont-guppy/bin:${PATH}"
-
-# ── 3. Dorado ─────────────────────────────────────────────────────────────────
-ARG DORADO_VERSION=1.0.2
+# ── 2. Dorado (current) — used for RNA004 ─────────────────────────────────────
+ARG DORADO_VERSION=1.4.0
 RUN set -eux; \
     wget -q -O /tmp/dorado.tar.gz \
         "https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_VERSION}-linux-x64.tar.gz"; \
@@ -63,12 +35,26 @@ RUN set -eux; \
     rm /tmp/dorado.tar.gz; \
     ln -s "/opt/dorado-${DORADO_VERSION}-linux-x64/bin/dorado" /usr/local/bin/dorado
 
-# ── 4. Dorado RNA004 models (pre-downloaded to avoid runtime network access) ──
+# ── 3. Dorado (legacy) — used for RNA001 / RNA002 ─────────────────────────────
+# dorado 0.9.6 is the last version that supports RNA002 basecalling and still
+# accepts fast5 input (1.0.0 removed both).
+ARG DORADO_LEGACY_VERSION=0.9.6
+RUN set -eux; \
+    wget -q -O /tmp/dorado-legacy.tar.gz \
+        "https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_LEGACY_VERSION}-linux-x64.tar.gz"; \
+    tar -xzf /tmp/dorado-legacy.tar.gz -C /opt/; \
+    rm /tmp/dorado-legacy.tar.gz; \
+    ln -s "/opt/dorado-${DORADO_LEGACY_VERSION}-linux-x64/bin/dorado" /usr/local/bin/dorado-legacy
+
+# ── 4. Dorado models (pre-downloaded to avoid runtime network access) ─────────
 ENV DORADO_MODELS_DIR=/opt/dorado-models
+# RNA004 models (three tiers) — downloaded with current dorado
 RUN mkdir -p "${DORADO_MODELS_DIR}" \
     && dorado download --model rna004_130bps_hac@v5.2.0  --directory "${DORADO_MODELS_DIR}" \
     && dorado download --model rna004_130bps_fast@v5.2.0 --directory "${DORADO_MODELS_DIR}" \
     && dorado download --model rna004_130bps_sup@v5.2.0  --directory "${DORADO_MODELS_DIR}"
+# RNA002 model — downloaded with legacy dorado (only hac variant exists for RNA002)
+RUN dorado-legacy download --model rna002_70bps_hac@v3 --directory "${DORADO_MODELS_DIR}"
 
 # ── 5. slow5tools 1.4.0 ───────────────────────────────────────────────────────
 RUN set -eux; \

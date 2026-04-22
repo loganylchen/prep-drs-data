@@ -1,7 +1,7 @@
 # prep-drs-data — Nanopore DRS 原始数据预处理流程
 
 一个用于 Nanopore Direct RNA Sequencing (DRS) 原始数据预处理的 Bash 流程。
-接受 fast5 或 pod5 输入，根据试剂盒类型自动选择 guppy（RNA001/RNA002）或 dorado（RNA004）进行 basecalling，
+接受 fast5 或 pod5 输入，根据试剂盒类型自动选择 dorado-legacy 0.9.6（RNA001/RNA002）或 dorado 1.4（RNA004）进行 basecalling，
 并输出标准化的 per-sample 目录结构：合并后的 FASTQ、BLOW5 信号文件、以及整理好的原始数据。
 所有依赖工具都打包在提供的 Dockerfile 中。
 
@@ -11,7 +11,7 @@
 
 1. [输出目录结构](#输出目录结构)
 2. [系统要求](#系统要求)
-3. [工具准备（关键：ont-guppy 需要手动下载）](#工具准备)
+3. [工具准备](#工具准备)
 4. [构建 Docker 镜像](#构建-docker-镜像)
 5. [运行流程](#运行流程)
 6. [CLI 参数说明](#cli-参数说明)
@@ -34,8 +34,7 @@
 ```
 <output>/SAMPLE01/
 ├── fastq/
-│   ├── pass.fq.gz              # 合并后的 pass reads（gzip 压缩的 FASTQ）
-│   └── sequencing_summary.txt  # 仅 guppy 产生；dorado 路径没有
+│   └── pass.fq.gz              # 合并后的 pass reads（gzip 压缩的 FASTQ）
 ├── blow5/
 │   └── nanopore.drs.blow5      # 合并后的 BLOW5 信号文件
 └── fast5/    ← 或 pod5/        # 移动（或复制）过来的原始数据
@@ -73,43 +72,23 @@ docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
 
 ## 工具准备
 
-### dorado（RNA004 basecalling）— 自动下载
+所有 basecaller（dorado 1.4 + dorado 0.9.6）、信号转换工具和模型文件都由 Dockerfile 自动下载，
+**不需要任何手动操作**。
 
-构建镜像时 Dockerfile 会自动从 ONT CDN 下载 dorado 以及三个档位的 RNA004 模型（fast / hac / sup），
-不需要任何手动操作。
+### dorado（当前版本，RNA004 basecalling）— 自动下载
 
-### ont-guppy（RNA001/RNA002 basecalling）— 需要手动获取
+构建镜像时 Dockerfile 会自动从 ONT CDN 下载 dorado 1.4.0 以及三个档位的 RNA004 模型
+（`rna004_130bps_{fast,hac,sup}@v5.2.0`）。
 
-> ⚠️ **重要**：guppy 已被 ONT 归档，需要 ONT Community 账号登录后下载。
-> 如果你只处理 RNA004 数据，**可以跳过这一步**，直接构建镜像也能用。
+### dorado-legacy（0.9.6，RNA001/RNA002 basecalling）— 自动下载
 
-**方法 A：把 tarball 放到项目根目录（推荐）**
+dorado 0.9.6 是 **最后一个支持 RNA002 basecalling 并且仍然接受 fast5 输入** 的版本。
+Dockerfile 会把它安装为 `/usr/local/bin/dorado-legacy`，与 `dorado`（1.4.0）共存，并预先下载
+`rna002_70bps_hac@v3` 模型。
 
-1. 登录 [ONT Community](https://community.nanoporetech.com/) 下载 `ont-guppy_6.5.7_linux64.tar.gz`
-2. 把文件放到 `prep-drs-data/` 根目录，与 `Dockerfile` 同级
-3. 构建镜像时会自动被 `COPY` 进去
-
-```bash
-cd /path/to/prep-drs-data
-ls ont-guppy_6.5.7_linux64.tar.gz   # 确认文件存在
-```
-
-**方法 B：通过 `--build-arg GUPPY_URL`**
-
-如果你有一个预签名 URL 可以直接下载：
-
-```bash
-docker build --build-arg GUPPY_URL="https://example.com/ont-guppy_6.5.7_linux64.tar.gz" \
-  -t prep-drs:latest .
-```
-
-**方法 C：不装 guppy**（仅限 RNA004）
-
-```bash
-docker build -t prep-drs:latest .
-```
-
-镜像仍然能构建成功，只是运行 `--kit rna001` 或 `--kit rna002` 时会报 `guppy_basecaller: command not found` (exit 2)。
+> 📌 **为什么不用 guppy？** guppy 已被 ONT 归档，发布时需要登录 ONT Community 账号，
+> 不便于自动化构建。dorado-legacy 0.9.6 能完整覆盖 RNA001/RNA002 的需求，且在 ONT CDN 上
+> 公开可下载。
 
 ---
 
@@ -120,14 +99,16 @@ cd /path/to/prep-drs-data
 docker build -t prep-drs:latest .
 ```
 
-构建耗时约 **10–30 分钟**，取决于网络速度和宿主机性能。主要耗时在：
+构建耗时约 **15–40 分钟**，取决于网络速度和宿主机性能。主要耗时在：
 
-- 下载 dorado（约 300 MB）
+- 下载 dorado 1.4.0（约 300 MB）
+- 下载 dorado 0.9.6（legacy，约 250 MB）
 - 下载 3 个 RNA004 模型（约 2–4 GB，已内嵌到镜像中，运行时不需再联网）
+- 下载 RNA002 模型 `rna002_70bps_hac@v3`（约 30 MB）
 - 下载 slow5tools（约 50 MB）
 - `pip install blue-crab pod5`
 
-最终镜像大小约 **8–12 GB**。
+最终镜像大小约 **9–13 GB**。
 
 **验证构建成功：**
 
@@ -228,7 +209,7 @@ docker run --rm --gpus all \
 
 ### 场景 3：RNA002 但数据是 pod5（新版 MinKNOW 输出）
 
-流程会自动先把 pod5 转成 fast5，再喂给 guppy：
+dorado-legacy 0.9.6 原生支持 pod5，无需转换：
 
 ```bash
 docker run --rm --gpus all \
@@ -261,7 +242,7 @@ docker run --rm --gpus all \
 
 ## 本地运行（不用 Docker）
 
-如果宿主机已经装好了所有依赖（guppy、dorado、slow5tools、blue-crab、pod5、pigz），可以直接本地跑：
+如果宿主机已经装好了所有依赖（dorado、dorado-legacy、slow5tools、blue-crab、pod5、pigz），可以直接本地跑：
 
 ```bash
 cd /path/to/prep-drs-data
@@ -278,8 +259,8 @@ cd /path/to/prep-drs-data
 
 | 试剂盒 | 输入 | 必需工具 |
 |--------|------|---------|
-| rna001/rna002 | fast5 | `guppy_basecaller`, `slow5tools`, `pigz` |
-| rna001/rna002 | pod5 | `guppy_basecaller`, `slow5tools`, `blue-crab`, `pod5`, `pigz` |
+| rna001/rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz` |
+| rna001/rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz` |
 | rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz` |
 | rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz` |
 
@@ -377,11 +358,11 @@ du -sh /out/SAMPLE01/*/           # 看各子目录大小
 
 **解决**：把 fast5 和 pod5 分到两个不同目录，分别作为两个样品处理；或者删掉不要的那种。
 
-### 错误：`guppy_basecaller: command not found`
+### 错误：`dorado-legacy: command not found`
 
-**原因**：构建镜像时没装 guppy。
+**原因**：镜像构建失败或被手改过。dorado-legacy 0.9.6 应该由 Dockerfile 自动安装。
 
-**解决**：参见 [工具准备](#工具准备) 中的方法 A 或 B，重新 `docker build`。
+**解决**：重新 `docker build`，确保 `dorado-legacy` 下载步骤没有出错。
 
 ### 错误：`dorado: model download failed`
 
@@ -447,9 +428,9 @@ du -sh /out/SAMPLE01/*/           # 看各子目录大小
 3. **输入格式检测** — 递归统计 `*.fast5` / `*.pod5`，决定走哪条分支
 4. **准备输出目录** — 创建 `fastq/`、`blow5/`、`fast5/` 或 `pod5/`、`.tmp/`；已有输出时幂等跳过（`--force` 可覆盖）
 5. **Basecalling** —
-   - RNA001/RNA002 → guppy（若输入是 pod5，先转 fast5）
-   - RNA004 → dorado（若输入是 fast5，先转 pod5）
-6. **FASTQ 合并** — guppy 的 `pass/*.fastq.gz` 拼接 / dorado 直接管道到 pigz
+   - RNA001/RNA002 → `dorado-legacy` 0.9.6（原生支持 fast5 与 pod5，无需预转换）
+   - RNA004 → `dorado` 1.4（若输入是 fast5，先转 pod5）
+6. **FASTQ 输出** — dorado / dorado-legacy 直接以 `--emit-fastq` 管道到 pigz，写成 `pass.fq.gz`
 7. **FASTQ 完整性检查** — `gzip -t`
 8. **信号转 BLOW5** — fast5 用 `slow5tools f2s`，pod5 用 `blue-crab p2s`
 9. **BLOW5 合并** — `slow5tools merge` 成单文件 `nanopore.drs.blow5`
@@ -466,7 +447,7 @@ prep-drs-data/
 ├── prep_drs.sh                 # 主入口脚本
 ├── lib/
 │   ├── utils.sh                # 日志、参数解析、GPU/输入检查
-│   ├── basecall.sh             # guppy + dorado 封装、pod5↔fast5 转换
+│   ├── basecall.sh             # dorado + dorado-legacy 封装、fast5→pod5 转换
 │   └── signal_convert.sh       # slow5tools + blue-crab 封装、完整性检查
 ├── Dockerfile                  # 所有工具的容器镜像
 ├── .dockerignore
@@ -504,9 +485,10 @@ bash test/test_cli.sh
 | 组件 | 版本 |
 |------|------|
 | Docker base | `nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` |
-| guppy | 6.5.7（最后一个支持 RNA001/002 的版本） |
-| dorado | 1.0.2 |
+| dorado（当前版，RNA004） | 1.4.0 |
+| dorado-legacy（RNA001/RNA002） | 0.9.6（最后一个支持 RNA002 且接受 fast5 输入的版本） |
 | dorado RNA004 模型 | `rna004_130bps_{fast,hac,sup}@v5.2.0` |
+| dorado RNA002 模型 | `rna002_70bps_hac@v3`（仅 hac 档，由 legacy 版下载） |
 | slow5tools | 1.4.0 |
 | blue-crab | pip 最新 |
 | pod5 | pip 最新 |
@@ -515,7 +497,7 @@ bash test/test_cli.sh
 
 ## 鸣谢
 
-- [Oxford Nanopore Technologies](https://nanoporetech.com/) — guppy, dorado, pod5
+- [Oxford Nanopore Technologies](https://nanoporetech.com/) — dorado, pod5
 - [hasindu2008/slow5tools](https://github.com/hasindu2008/slow5tools) — fast5 → BLOW5 转换与合并
 - [Psy-Fer/blue-crab](https://github.com/Psy-Fer/blue-crab) — pod5 → BLOW5 直接转换
 
