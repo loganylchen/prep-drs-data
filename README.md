@@ -1,192 +1,207 @@
-# prep-drs-data — Nanopore DRS 原始数据预处理流程
+# prep-drs-data — Nanopore DRS raw-data preparation pipeline
 
-一个用于 Nanopore Direct RNA Sequencing (DRS) 原始数据预处理的 Bash 流程。
-接受 fast5 或 pod5 输入，根据试剂盒类型自动选择 dorado-legacy 0.9.6（RNA001/RNA002）或 dorado 1.4（RNA004）进行 basecalling，
-并输出标准化的 per-sample 目录结构：合并后的 FASTQ、BLOW5 信号文件、以及整理好的原始数据。
-所有依赖工具都打包在提供的 Dockerfile 中。
+> 🌐 **Language / 语言**: **English (current)** · [中文](README.zh.md)
 
----
-
-## 目录
-
-1. [输出目录结构](#输出目录结构)
-2. [系统要求](#系统要求)
-3. [工具准备](#工具准备)
-4. [构建 Docker 镜像](#构建-docker-镜像)
-5. [运行流程](#运行流程)
-6. [CLI 参数说明](#cli-参数说明)
-7. [典型使用场景](#典型使用场景)
-8. [本地运行（不用 Docker）](#本地运行不用-docker)
-9. [批量处理多个样品](#批量处理多个样品)
-10. [输出验证](#输出验证)
-11. [常见问题排查](#常见问题排查)
-12. [退出码含义](#退出码含义)
-13. [流程内部阶段](#流程内部阶段)
-14. [项目结构](#项目结构)
-15. [测试](#测试)
-16. [持续集成 / Docker Hub 自动发布](#持续集成--docker-hub-自动发布)
+A Bash pipeline that turns raw Nanopore Direct RNA Sequencing (DRS) data
+(fast5 or pod5) into a clean, per-sample layout with merged FASTQ, merged
+BLOW5 signal, a QC report, and the original raw files preserved. All
+dependencies are bundled in a single Docker image.
 
 ---
 
-## 输出目录结构
+## Table of contents
 
-运行成功后，对于样品名 `SAMPLE01`，会在 `--output` 指定的目录下生成：
+1. [Output layout](#output-layout)
+2. [System requirements](#system-requirements)
+3. [Tooling (all auto-installed)](#tooling-all-auto-installed)
+4. [Build the Docker image](#build-the-docker-image)
+5. [Run the pipeline](#run-the-pipeline)
+6. [CLI reference](#cli-reference)
+7. [Common scenarios](#common-scenarios)
+8. [Running locally (without Docker)](#running-locally-without-docker)
+9. [Batch processing](#batch-processing)
+10. [Verifying outputs](#verifying-outputs)
+11. [Troubleshooting](#troubleshooting)
+12. [Exit codes](#exit-codes)
+13. [Pipeline stages](#pipeline-stages)
+14. [Project structure](#project-structure)
+15. [Testing](#testing)
+16. [Continuous integration / Docker Hub](#continuous-integration--docker-hub)
+
+---
+
+## Output layout
+
+For a sample named `SAMPLE01`, the pipeline produces:
 
 ```
 <output>/SAMPLE01/
 ├── fastq/
-│   └── pass.fq.gz              # 合并后的 pass reads（gzip 压缩的 FASTQ）
+│   └── pass.fq.gz              # merged pass reads, gzip-compressed FASTQ
 ├── blow5/
-│   └── nanopore.drs.blow5      # 合并后的 BLOW5 信号文件
-├── qc/                         # QC 报告（可用 --skip-qc 关闭）
+│   └── nanopore.drs.blow5      # merged BLOW5 signal file
+├── qc/                         # QC report (disable with --skip-qc)
 │   ├── nanoplot/
-│   │   ├── NanoPlot-report.html  # 可视化 QC 报告（在浏览器中打开）
-│   │   ├── NanoStats.txt         # read 数、长度、质量等统计表
-│   │   └── *.png                 # read length / quality 分布图
-│   ├── blow5_stats.txt         # slow5tools stats 输出
-│   └── qc_report.md            # 整合的 Markdown 总结
-└── fast5/    ← 或 pod5/        # 移动（或复制）过来的原始数据
+│   │   ├── NanoPlot-report.html  # interactive HTML QC report
+│   │   ├── NanoStats.txt         # read count, length, quality stats
+│   │   └── *.png                 # length / quality distribution plots
+│   ├── blow5_stats.txt         # output of `slow5tools stats`
+│   └── qc_report.md            # consolidated Markdown summary
+└── fast5/    ← or pod5/        # the original raw files (moved or copied)
 ```
 
-> 顶层目录名 = 样品名，下一层是 `fastq` / `blow5` / `qc` / `fast5 或 pod5` 四个子目录。
+Top-level directory = sample name, second level = `fastq/` / `blow5/` /
+`qc/` / (`fast5/` or `pod5/`).
 
 ---
 
-## 系统要求
+## System requirements
 
-| 项目 | 要求 |
-|------|------|
-| 操作系统 | Linux（Ubuntu 20.04+ 或 22.04 推荐） |
-| GPU | NVIDIA GPU（Pascal 架构及以上，VRAM ≥ 8GB 推荐） |
-| 驱动 | NVIDIA Driver ≥ 525（支持 CUDA 11.8） |
+| Item | Requirement |
+|------|-------------|
+| OS | Linux (Ubuntu 20.04 / 22.04 recommended) |
+| GPU | NVIDIA GPU, Pascal or newer, ≥ 8 GB VRAM recommended |
+| Driver | NVIDIA driver ≥ 525 (CUDA 11.8 compatible) |
 | Docker | 20.10+ |
-| NVIDIA Container Toolkit | 已安装并配置 |
-| 磁盘空间 | 至少 3× 原始数据大小的空闲空间 |
-| 内存 | ≥ 16 GB |
+| NVIDIA Container Toolkit | installed & configured |
+| Disk | ≥ 3× the raw input size of free space |
+| RAM | ≥ 16 GB |
 
-**验证 GPU 支持：**
+**Verify GPU access:**
 
 ```bash
-# 宿主机
+# host
 nvidia-smi
 
-# Docker + GPU
+# inside Docker
 docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
 ```
 
-上面两条命令都能输出 GPU 信息才说明环境正确。
+Both commands must print GPU info for the pipeline to work.
 
 ---
 
-## 工具准备
+## Tooling (all auto-installed)
 
-所有 basecaller（dorado 1.4 + dorado 0.9.6）、信号转换工具和模型文件都由 Dockerfile 自动下载，
-**不需要任何手动操作**。
+The Dockerfile installs every dependency automatically. **No manual downloads,
+no ONT Community login required.**
 
-### dorado（当前版本，RNA004 basecalling）— 自动下载
+| Tool | Version | Used for |
+|------|---------|----------|
+| `dorado` | 1.4.0 | RNA004 basecalling |
+| `dorado-legacy` | 0.9.6 | RNA001 / RNA002 basecalling (last version that supports RNA002 and accepts fast5 natively) |
+| dorado RNA004 models | `rna004_130bps_{fast,hac,sup}@v5.2.0` | pre-downloaded into the image |
+| dorado RNA002 model | `rna002_70bps_hac@v3` | pre-downloaded (only `hac` exists for RNA002) |
+| `slow5tools` | 1.4.0 | fast5 → BLOW5, merge, stats, quickcheck |
+| `blue-crab` | pip latest | pod5 → BLOW5 direct conversion |
+| `pod5` | pip latest | fast5 → pod5 (only needed for RNA004 + fast5 input) |
+| `NanoPlot` | ≥ 1.42.0 | read-level QC report |
+| `pigz` | apt | parallel gzip compression |
 
-构建镜像时 Dockerfile 会自动从 ONT CDN 下载 dorado 1.4.0 以及三个档位的 RNA004 模型
-（`rna004_130bps_{fast,hac,sup}@v5.2.0`）。
-
-### dorado-legacy（0.9.6，RNA001/RNA002 basecalling）— 自动下载
-
-dorado 0.9.6 是 **最后一个支持 RNA002 basecalling 并且仍然接受 fast5 输入** 的版本。
-Dockerfile 会把它安装为 `/usr/local/bin/dorado-legacy`，与 `dorado`（1.4.0）共存，并预先下载
-`rna002_70bps_hac@v3` 模型。
-
-> 📌 **为什么不用 guppy？** guppy 已被 ONT 归档，发布时需要登录 ONT Community 账号，
-> 不便于自动化构建。dorado-legacy 0.9.6 能完整覆盖 RNA001/RNA002 的需求，且在 ONT CDN 上
-> 公开可下载。
+> Why two dorado versions? `dorado` ≥ 1.0.0 dropped RNA002 support and stopped
+> accepting fast5 input. `dorado-legacy` 0.9.6 is the last release that
+> handles both, and it is publicly available on the ONT CDN (unlike the
+> archived guppy, which needs an ONT Community account).
 
 ---
 
-## 构建 Docker 镜像
+## Build the Docker image
 
 ```bash
 cd /path/to/prep-drs-data
 docker build -t prep-drs:latest .
 ```
 
-构建耗时约 **15–40 分钟**，取决于网络速度和宿主机性能。主要耗时在：
+Build takes roughly **15–40 minutes**, dominated by:
 
-- 下载 dorado 1.4.0（约 300 MB）
-- 下载 dorado 0.9.6（legacy，约 250 MB）
-- 下载 3 个 RNA004 模型（约 2–4 GB，已内嵌到镜像中，运行时不需再联网）
-- 下载 RNA002 模型 `rna002_70bps_hac@v3`（约 30 MB）
-- 下载 slow5tools（约 50 MB）
-- `pip install blue-crab pod5`
+- downloading dorado 1.4.0 (~300 MB)
+- downloading dorado 0.9.6 legacy (~250 MB)
+- downloading the three RNA004 models (~2–4 GB, baked into the image — no
+  network access needed at runtime)
+- downloading the RNA002 model (~30 MB)
+- downloading slow5tools (~50 MB)
+- `pip install pod5 blue-crab NanoPlot`
 
-最终镜像大小约 **9–13 GB**。
+Final image size: **~9–13 GB**.
 
-**验证构建成功：**
+**Verify the build:**
 
 ```bash
 docker run --rm prep-drs:latest --help
 ```
 
-应该打印出 `Usage: prep_drs.sh --sample NAME ...` 并正常退出。
+Should print `Usage: prep_drs.sh --sample NAME ...` and exit 0.
+
+### Pulling from Docker Hub
+
+If you do not want to build locally, pull the pre-built image (see
+[Continuous integration / Docker Hub](#continuous-integration--docker-hub)
+for how the image is published):
+
+```bash
+docker pull <your-docker-hub-user>/prep-drs-data:latest
+```
 
 ---
 
-## 运行流程
+## Run the pipeline
 
-### 通用调用模板
+### Invocation template
 
 ```bash
 docker run --rm --gpus all \
-  -v /宿主机/原始数据目录:/in:ro \
-  -v /宿主机/输出目录:/out \
+  -v /host/raw_input:/in:ro \
+  -v /host/output:/out \
   prep-drs:latest \
-  --sample <样品名> \
+  --sample <sample_name> \
   --input /in \
   --kit <rna001|rna002|rna004> \
   --output /out
 ```
 
-**参数解释：**
-
-| Docker 参数 | 含义 |
-|-------------|------|
-| `--rm` | 运行结束自动删除容器 |
-| `--gpus all` | 把宿主机所有 GPU 暴露给容器（必需） |
-| `-v /host:/in:ro` | 把原始数据目录只读挂载到容器的 `/in` |
-| `-v /host:/out` | 把输出目录可读写挂载到容器的 `/out` |
+| Docker flag | Meaning |
+|-------------|---------|
+| `--rm` | remove the container after it exits |
+| `--gpus all` | expose all host GPUs (required for basecalling) |
+| `-v /host:/in:ro` | mount raw-data directory read-only at `/in` |
+| `-v /host:/out` | mount output directory read-write at `/out` |
 
 ---
 
-## CLI 参数说明
+## CLI reference
 
-### 必需参数
+### Required
 
-| 参数 | 说明 |
-|------|------|
-| `--sample NAME` | 样品名；作为输出目录的顶层子目录名 |
-| `--input DIR` | 原始数据目录，会递归查找 `*.fast5` 或 `*.pod5` |
-| `--kit KIT` | 试剂盒类型：`rna001` / `rna002` / `rna004` |
-| `--output DIR` | 输出根目录 |
+| Flag | Description |
+|------|-------------|
+| `--sample NAME` | sample name (becomes the top-level output directory) |
+| `--input DIR` | directory to recursively scan for `*.fast5` or `*.pod5` |
+| `--kit KIT` | `rna001` / `rna002` / `rna004` |
+| `--output DIR` | output root directory |
 
-### 可选参数
+### Optional
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--threads N` | `nproc` | 并行线程数（影响 slow5tools merge、pigz 等） |
-| `--model-tier T` | `hac` | basecalling 精度：`fast` / `hac` / `sup` |
-| `--device D` | `cuda:0` | GPU 设备（多卡可用 `cuda:0,cuda:1`） |
-| `--copy` | 关 | 复制原始数据而不是移动（占用双倍空间，但不改动源目录） |
-| `--zstd` | 关 | BLOW5 使用 zstd 压缩（默认 zlib，兼容性更好） |
-| `--force` | 关 | 即使输出已存在也重跑 |
-| `--keep-tmp` | 关 | 保留中间文件目录 `.tmp`（调试用） |
-| `--skip-qc` | 关 | 跳过 QC 报告生成（NanoPlot + slow5tools stats） |
-| `--help` | — | 打印帮助并退出 |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threads N` | `nproc` | parallelism for slow5tools merge, pigz, NanoPlot, etc. |
+| `--model-tier T` | `hac` | basecalling accuracy tier: `fast` / `hac` / `sup` (RNA002 only has `hac`) |
+| `--device D` | `cuda:0` | GPU device (multi-GPU: `cuda:0,cuda:1`) |
+| `--copy` | off | copy raw files instead of moving them (doubles disk usage but leaves the source directory untouched) |
+| `--zstd` | off | use zstd compression for BLOW5 (default is zlib, wider tool compatibility) |
+| `--force` | off | re-run even if outputs already exist |
+| `--keep-tmp` | off | keep `.tmp/` workspace (for debugging) |
+| `--skip-qc` | off | skip the NanoPlot + slow5tools stats QC report |
+| `--help` | — | print help and exit |
 
-> **注意 `--sample` 的安全限制**：不允许出现 `/`、`.`、`..`、控制字符。
-> 例如 `--sample "../evil"` 会被直接拒绝（退出码 1），防止路径穿越。
+> **Security note on `--sample`**: the value must be a simple directory name.
+> Slashes, `.`, `..`, and control characters are rejected (exit code 1) to
+> prevent path traversal.
 
 ---
 
-## 典型使用场景
+## Common scenarios
 
-### 场景 1：RNA002 数据，输入是 fast5（最常见的旧数据）
+### Scenario 1 — RNA002, fast5 input (most common legacy case)
 
 ```bash
 docker run --rm --gpus all \
@@ -199,9 +214,9 @@ docker run --rm --gpus all \
   --output /out
 ```
 
-预期输出：`/data/drs_prep/PatientA_RNA002/{fastq,blow5,fast5}/`
+Expected output: `/data/drs_prep/PatientA_RNA002/{fastq,blow5,qc,fast5}/`.
 
-### 场景 2：RNA004 数据，输入是 pod5（最常见的新数据）
+### Scenario 2 — RNA004, pod5 input (most common current case)
 
 ```bash
 docker run --rm --gpus all \
@@ -216,9 +231,10 @@ docker run --rm --gpus all \
   --threads 32
 ```
 
-### 场景 3：RNA002 但数据是 pod5（新版 MinKNOW 输出）
+### Scenario 3 — RNA002 with pod5 input
 
-dorado-legacy 0.9.6 原生支持 pod5，无需转换：
+`dorado-legacy` 0.9.6 accepts pod5 natively, so no format conversion is
+needed:
 
 ```bash
 docker run --rm --gpus all \
@@ -229,12 +245,13 @@ docker run --rm --gpus all \
   --input /in \
   --kit rna002 \
   --output /out \
-  --copy              # 保留原始 pod5 副本，不移动
+  --copy
 ```
 
-### 场景 4：RNA004 但数据是 fast5（较少见）
+### Scenario 4 — RNA004 with fast5 input (uncommon)
 
-流程会自动把 fast5 转成 pod5，再喂给 dorado：
+Current `dorado` requires pod5, so the pipeline auto-converts fast5 → pod5
+first:
 
 ```bash
 docker run --rm --gpus all \
@@ -249,9 +266,11 @@ docker run --rm --gpus all \
 
 ---
 
-## 本地运行（不用 Docker）
+## Running locally (without Docker)
 
-如果宿主机已经装好了所有依赖（dorado、dorado-legacy、slow5tools、blue-crab、pod5、pigz），可以直接本地跑：
+If the host has every dependency on `PATH` (`dorado`, `dorado-legacy`,
+`slow5tools`, `blue-crab`, `pod5`, `pigz`, `NanoPlot`), run the script
+directly:
 
 ```bash
 cd /path/to/prep-drs-data
@@ -262,24 +281,24 @@ cd /path/to/prep-drs-data
   --output ./output
 ```
 
-脚本会自动找 `./lib/` 下的三个库文件。
+It will auto-locate `./lib/` alongside the script.
 
-依赖检查（哪些要装）：
+Which tools are actually required depends on the input format and kit:
 
-| 试剂盒 | 输入 | 必需工具 |
-|--------|------|---------|
-| rna001/rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz`, `NanoPlot` |
-| rna001/rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
+| Kit | Input | Required tools |
+|-----|-------|---------------|
+| rna001 / rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz`, `NanoPlot` |
+| rna001 / rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
 | rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
 | rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
 
-> `NanoPlot` 仅在不加 `--skip-qc` 时需要。
+> `NanoPlot` is only needed when `--skip-qc` is not passed.
 
 ---
 
-## 批量处理多个样品
+## Batch processing
 
-每次调用只处理一个样品。处理多个样品可以写个简单的 wrapper：
+Each invocation handles one sample. Process many with a small wrapper:
 
 ```bash
 #!/usr/bin/env bash
@@ -311,70 +330,47 @@ for sample in "${!SAMPLES[@]}"; do
 done
 ```
 
-由于脚本本身支持 **幂等**（输出已存在会自动跳过），失败后重跑整个批次也是安全的。
-如果要强制重跑，加 `--force`。
+The pipeline is **idempotent**: if all final outputs already exist, it
+exits 0 and does nothing. Re-running after a partial failure is safe.
+Use `--force` to override.
 
 ---
 
-## 输出验证
+## Verifying outputs
 
-### 检查 FASTQ
+### FASTQ
 
 ```bash
-# 检查 gzip 完整性
-gzip -t /out/SAMPLE01/fastq/pass.fq.gz && echo "OK"
-
-# 看前几条 reads
+gzip -t /out/SAMPLE01/fastq/pass.fq.gz && echo OK
 zcat /out/SAMPLE01/fastq/pass.fq.gz | head -8
-
-# 统计 read 数量
-echo $(( $(zcat /out/SAMPLE01/fastq/pass.fq.gz | wc -l) / 4 ))
+echo $(( $(zcat /out/SAMPLE01/fastq/pass.fq.gz | wc -l) / 4 ))  # read count
 ```
 
-### 检查 BLOW5
+### BLOW5
 
 ```bash
-# 在容器里
-docker run --rm -v /out:/out prep-drs:latest bash -c \
-  'slow5tools quickcheck /out/SAMPLE01/blow5/nanopore.drs.blow5 && echo OK'
-
-# 或者宿主机装了 slow5tools
-slow5tools quickcheck /out/SAMPLE01/blow5/nanopore.drs.blow5
-slow5tools stats /out/SAMPLE01/blow5/nanopore.drs.blow5
+slow5tools quickcheck /out/SAMPLE01/blow5/nanopore.drs.blow5 && echo OK
+slow5tools stats      /out/SAMPLE01/blow5/nanopore.drs.blow5
 ```
 
-### 检查原始数据
+### Raw files
 
 ```bash
-ls /out/SAMPLE01/fast5/ | head    # 或 pod5/
-du -sh /out/SAMPLE01/*/           # 看各子目录大小
+ls /out/SAMPLE01/fast5/ | head      # or pod5/
+du -sh /out/SAMPLE01/*/             # size of each sub-directory
 ```
 
-### 查看 QC 报告
-
-basecalling + signal conversion 完成后，流程会自动生成 QC 报告到 `<sample>/qc/`：
-
-```
-qc/
-├── nanoplot/
-│   ├── NanoPlot-report.html   # 主报告（在浏览器里打开）
-│   ├── NanoStats.txt          # 读数/长度/质量等关键数字
-│   └── *.png                  # 长度/质量分布图
-├── blow5_stats.txt            # slow5tools stats 的输出
-└── qc_report.md               # 整合 Markdown 总结
-```
-
-快速查看：
+### QC report
 
 ```bash
-# 看 Markdown 总结
+# Markdown summary
 cat /out/SAMPLE01/qc/qc_report.md
 
-# 用浏览器打开 HTML 报告
+# Open HTML report in a browser
 xdg-open /out/SAMPLE01/qc/nanoplot/NanoPlot-report.html
 ```
 
-如果你只想做 basecalling 和信号转换，不想耗时做 QC，可加 `--skip-qc`：
+To skip QC entirely (saves a few minutes on very large samples):
 
 ```bash
 docker run --rm --gpus all \
@@ -386,190 +382,186 @@ docker run --rm --gpus all \
 
 ---
 
-## 常见问题排查
+## Troubleshooting
 
-### 错误：`nvidia-smi: not available`（退出码 3）
+### `nvidia-smi: not available` (exit code 3)
 
-**原因**：容器没拿到 GPU。
+**Cause:** the container has no GPU.
 
-**解决**：
-1. 确认宿主机 `nvidia-smi` 能用
-2. 确认已装 NVIDIA Container Toolkit：`sudo apt install nvidia-container-toolkit && sudo systemctl restart docker`
-3. 确认运行时加了 `--gpus all`
+**Fix:**
+1. Check `nvidia-smi` works on the host.
+2. Install NVIDIA Container Toolkit: `sudo apt install nvidia-container-toolkit && sudo systemctl restart docker`.
+3. Always pass `--gpus all` to `docker run`.
 
-### 错误：`Mixed input formats` / `no fast5 or pod5 files found`（退出码 4）
+### `Mixed input formats` / `no fast5 or pod5 files found` (exit code 4)
 
-**原因**：`--input` 目录里同时有 fast5 和 pod5，或者两种都没有。
+**Cause:** the `--input` directory contains both fast5 and pod5, or neither.
 
-**解决**：把 fast5 和 pod5 分到两个不同目录，分别作为两个样品处理；或者删掉不要的那种。
+**Fix:** separate the formats into different directories and run each as its
+own sample, or delete the format you do not want.
 
-### 错误：`dorado-legacy: command not found`
+### `dorado-legacy: command not found`
 
-**原因**：镜像构建失败或被手改过。dorado-legacy 0.9.6 应该由 Dockerfile 自动安装。
+**Cause:** the image was built incorrectly or has been modified. The Dockerfile
+is expected to install `dorado-legacy` 0.9.6 automatically.
 
-**解决**：重新 `docker build`，确保 `dorado-legacy` 下载步骤没有出错。
+**Fix:** rebuild the image and confirm the `dorado-legacy` download step
+succeeded.
 
-### 错误：`dorado: model download failed`
+### `dorado: model download failed`
 
-**原因**：构建镜像时没联网。
+**Cause:** no network during image build.
 
-**解决**：在能联网的机器上构建，然后 `docker save prep-drs:latest > prep-drs.tar` 再 `docker load` 到目标机器。
+**Fix:** build on a machine with internet, then move the image with
+`docker save prep-drs:latest > prep-drs.tar` / `docker load`.
 
-### 错误：`mv: cannot move ... : Invalid cross-device link`
+### `mv: cannot move ... : Invalid cross-device link`
 
-**原因**：`--input` 和 `--output` 在不同文件系统，`mv` 不能跨挂载点。
+**Cause:** `--input` and `--output` live on different filesystems; `mv`
+cannot cross mount points.
 
-**解决**：加 `--copy` 改成复制；或者把输入输出放到同一挂载点下。
+**Fix:** pass `--copy`, or put the input and output on the same filesystem.
 
-### 错误：磁盘空间不足
+### Out of disk space
 
-**原因**：pod5 ↔ fast5 转换、basecalling、BLOW5 merge 都会临时占用磁盘。
+**Cause:** pod5 ↔ fast5 conversion, basecalling, and BLOW5 merge all need
+scratch space under `.tmp/`.
 
-**解决**：确保 `--output` 所在磁盘有至少 **3 倍原始数据大小** 的空闲空间。
+**Fix:** make sure the `--output` disk has at least **3× the raw input
+size** free.
 
-### 错误：`--sample` 被拒绝
+### `--sample` rejected
 
-**原因**：样品名含有 `/`、`.`、`..` 或控制字符（防路径穿越的安全检查）。
+**Cause:** the sample name contains `/`, `.`, `..`, or control characters
+(path-traversal guard).
 
-**解决**：只用字母、数字、下划线、短横线。
+**Fix:** use only letters, digits, underscore, and hyphen.
 
-### dorado 跑得很慢
+### dorado runs very slowly
 
-**可能原因**：
-- 使用了 `--model-tier sup`（最准但最慢）
-- GPU 被其他任务占用：检查 `nvidia-smi`
+**Possible causes:**
+- `--model-tier sup` is the most accurate but slowest model.
+- GPU is busy with another process — check `nvidia-smi`.
 
-**加速方法**：
-- 改用 `--model-tier hac`（默认）或 `fast`
-- 增大 `--threads`
-- 多 GPU 环境下用 `--device cuda:0,cuda:1`
-
----
-
-## 退出码含义
-
-| 退出码 | 含义 |
-|--------|------|
-| 0 | 成功 |
-| 1 | 参数错误 |
-| 2 | 依赖工具未找到 |
-| 3 | 无 GPU / nvidia-smi 失败 |
-| 4 | 输入错误（空目录、混合格式、不可读） |
-| 5 | Basecalling 失败 |
-| 6 | 信号格式转换失败 |
-| 7 | 完整性检查失败（gzip -t 或 slow5tools quickcheck） |
-| 8 | 原始文件移动/复制失败 |
-| 9 | QC 报告生成失败（NanoPlot 或 slow5tools stats） |
-
-脚本失败后退出码可以直接用于 shell 的 `if [[ $? -eq 5 ]]; then ...; fi` 分支处理。
+**Speed-ups:**
+- switch to `--model-tier hac` (default) or `fast`
+- increase `--threads`
+- use multiple GPUs: `--device cuda:0,cuda:1`
 
 ---
 
-## 流程内部阶段
+## Exit codes
 
-`prep_drs.sh` 依次执行以下阶段，任何一步失败都会立即退出：
+| Code | Meaning |
+|------|---------|
+| 0 | success |
+| 1 | argument error |
+| 2 | missing dependency |
+| 3 | no GPU / `nvidia-smi` failed |
+| 4 | input error (empty, mixed formats, unreadable) |
+| 5 | basecalling failed |
+| 6 | signal-format conversion failed |
+| 7 | integrity check failed (`gzip -t` or `slow5tools quickcheck`) |
+| 8 | raw-file move/copy failed |
+| 9 | QC report generation failed (NanoPlot or slow5tools stats) |
 
-1. **参数解析与验证** — 检查必需参数、试剂盒类型、模型档位、样品名合法性
-2. **依赖和 GPU 检查** — 根据 kit 和输入格式动态决定要检查哪些工具
-3. **输入格式检测** — 递归统计 `*.fast5` / `*.pod5`，决定走哪条分支
-4. **准备输出目录** — 创建 `fastq/`、`blow5/`、`fast5/` 或 `pod5/`、`.tmp/`；已有输出时幂等跳过（`--force` 可覆盖）
-5. **Basecalling** —
-   - RNA001/RNA002 → `dorado-legacy` 0.9.6（原生支持 fast5 与 pod5，无需预转换）
-   - RNA004 → `dorado` 1.4（若输入是 fast5，先转 pod5）
-6. **FASTQ 输出** — dorado / dorado-legacy 直接以 `--emit-fastq` 管道到 pigz，写成 `pass.fq.gz`
-7. **FASTQ 完整性检查** — `gzip -t`
-8. **信号转 BLOW5** — fast5 用 `slow5tools f2s`，pod5 用 `blue-crab p2s`
-9. **BLOW5 合并** — `slow5tools merge` 成单文件 `nanopore.drs.blow5`
-10. **BLOW5 完整性检查** — `slow5tools quickcheck`
-11. **QC 报告** — `NanoPlot` 生成 HTML 报告 + `slow5tools stats`，整合为 `qc/qc_report.md`（可用 `--skip-qc` 关闭）
-12. **原始文件归位** — 把 `*.fast5` 或 `*.pod5` move（默认）或 copy（`--copy`）进 `fast5/`/`pod5/`
-13. **清理** — 删 `.tmp`（除非 `--keep-tmp`），打印耗时与输出清单
+These are stable, so scripts can branch on them: `if [[ $? -eq 5 ]]; then ...; fi`.
 
 ---
 
-## 项目结构
+## Pipeline stages
+
+`prep_drs.sh` runs these stages in order; any failure aborts immediately:
+
+1. **Argument parsing & validation** — required flags, kit, model tier, sample-name safety.
+2. **Dependency & GPU check** — tools depend on kit + input format; `nvidia-smi` must work.
+3. **Input-format detection** — recursive counts of `*.fast5` / `*.pod5`; picks a branch.
+4. **Output directory prep** — creates `fastq/`, `blow5/`, `qc/`, `fast5/` or `pod5/`, `.tmp/`; skips idempotently if outputs already exist (use `--force` to re-run).
+5. **Basecalling**
+   - RNA001 / RNA002 → `dorado-legacy` 0.9.6 (accepts fast5 and pod5 natively, no pre-conversion)
+   - RNA004 → `dorado` 1.4 (auto-converts fast5 → pod5 first if needed)
+6. **FASTQ output** — dorado / dorado-legacy streams `--emit-fastq` through pigz to `pass.fq.gz`.
+7. **FASTQ integrity check** — `gzip -t`.
+8. **Signal → BLOW5** — fast5 via `slow5tools f2s`, pod5 via `blue-crab p2s`.
+9. **BLOW5 merge** — `slow5tools merge` → single `nanopore.drs.blow5`.
+10. **BLOW5 integrity check** — `slow5tools quickcheck`.
+11. **QC report** — `NanoPlot` for the FASTQ + `slow5tools stats` for the BLOW5, consolidated into `qc/qc_report.md` (skip with `--skip-qc`).
+12. **Raw-file placement** — move (default) or `--copy` the original `*.fast5` / `*.pod5` into the `fast5/` / `pod5/` directory.
+13. **Cleanup** — remove `.tmp/` (unless `--keep-tmp`), print wall-clock time and output manifest.
+
+---
+
+## Project structure
 
 ```
 prep-drs-data/
-├── prep_drs.sh                 # 主入口脚本
+├── prep_drs.sh                    # main entry-point
 ├── lib/
-│   ├── utils.sh                # 日志、参数解析、GPU/输入检查
-│   ├── basecall.sh             # dorado + dorado-legacy 封装、fast5→pod5 转换
-│   ├── signal_convert.sh       # slow5tools + blue-crab 封装、完整性检查
-│   └── qc.sh                   # NanoPlot + slow5tools stats、qc_report.md 生成
-├── Dockerfile                  # 所有工具的容器镜像
+│   ├── utils.sh                   # logging, argument parsing, GPU/input checks
+│   ├── basecall.sh                # dorado + dorado-legacy wrappers, fast5→pod5
+│   ├── signal_convert.sh          # slow5tools + blue-crab wrappers, integrity checks
+│   └── qc.sh                      # NanoPlot + slow5tools stats, qc_report.md generator
+├── Dockerfile                     # bundles every dependency
 ├── .dockerignore
-├── README.md                   # 本文档
+├── README.md                      # this file (English)
+├── README.zh.md                   # Chinese version (中文版)
 ├── .github/
 │   └── workflows/
-│       └── docker-publish.yml  # GH Actions：自动构建镜像并推送到 Docker Hub
+│       └── docker-publish.yml     # GitHub Actions → Docker Hub auto-publish
 ├── examples/
-│   └── run_example.sh          # 四个示例调用
+│   └── run_example.sh             # four example invocations
 └── test/
-    ├── test_cli.sh             # CLI 冒烟测试（19 个测试用例）
+    ├── test_cli.sh                # 19 CLI smoke tests (no GPU required)
     └── fixtures/
-        └── README.md           # 端到端测试数据的组织说明
+        └── README.md              # how to stage real DRS data for end-to-end tests
 ```
 
 ---
 
-## 测试
+## Testing
 
-### 冒烟测试（不需要 GPU 或真实数据）
+### Smoke tests (no GPU, no real data required)
 
 ```bash
 cd /path/to/prep-drs-data
 bash test/test_cli.sh
 ```
 
-验证 CLI 参数解析、帮助文本、路径穿越防护、输入验证等。预期 **19/19 通过**。
+Covers argument parsing, help text, path-traversal protection, and input
+validation. Expect **19/19 passing**.
 
-### 端到端测试（需要 GPU 和真实数据）
+### End-to-end testing (needs GPU and real data)
 
-参见 `test/fixtures/README.md` 的说明，从 [ONT 开放数据集](https://github.com/nanoporetech/ont_open_datasets)
-下载小规模 DRS 样本，放到 `test/fixtures/` 下运行完整流程。
-
----
-
-## 版本信息
-
-| 组件 | 版本 |
-|------|------|
-| Docker base | `nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` |
-| dorado（当前版，RNA004） | 1.4.0 |
-| dorado-legacy（RNA001/RNA002） | 0.9.6（最后一个支持 RNA002 且接受 fast5 输入的版本） |
-| dorado RNA004 模型 | `rna004_130bps_{fast,hac,sup}@v5.2.0` |
-| dorado RNA002 模型 | `rna002_70bps_hac@v3`（仅 hac 档，由 legacy 版下载） |
-| slow5tools | 1.4.0 |
-| blue-crab | pip 最新 |
-| pod5 | pip 最新 |
-| NanoPlot | ≥ 1.42.0（pip 安装，用于 QC 报告） |
+See `test/fixtures/README.md`. Small DRS samples can be taken from
+[ONT open datasets](https://github.com/nanoporetech/ont_open_datasets),
+placed under `test/fixtures/`, and run through the full pipeline.
 
 ---
 
-## 持续集成 / Docker Hub 自动发布
+## Continuous integration / Docker Hub
 
-仓库根下的 `.github/workflows/docker-publish.yml` 会在以下时机自动构建镜像并推送到 Docker Hub：
+`.github/workflows/docker-publish.yml` builds and publishes the Docker image
+automatically:
 
-- `push` 到 `main` 分支 → 打 `latest` + `main` + `sha-<短SHA>` 标签
-- `push` 带 `v*` 的 git tag（例如 `v1.2.0`）→ 打对应 tag 标签
-- 手动触发（Actions 页面的 **Run workflow** 按钮）
+- on every `push` to `main` → tags `latest`, `main`, `sha-<short>`
+- on every `push` of a `v*` git tag (e.g. `v1.2.0`) → tag `<tag-name>`
+- on-demand via the **Run workflow** button in the Actions tab
 
-镜像名为 `${DOCKER_HUB_USER}/prep-drs-data`，其中 `DOCKER_HUB_USER` 是仓库 Secret。
+Image name: `${DOCKER_HUB_USER}/prep-drs-data`, where `DOCKER_HUB_USER` is a
+repository secret.
 
-### 一次性配置
+### One-time setup
 
-在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 下新增两个 Secret：
+Add two repository secrets at **Settings → Secrets and variables → Actions**:
 
-| Secret 名称 | 值 |
-|-------------|------|
-| `DOCKER_HUB_USER`  | 你的 Docker Hub 用户名 |
-| `DOCKER_HUB_TOKEN` | Docker Hub [Access Token](https://hub.docker.com/settings/security)（不要用密码） |
+| Secret | Value |
+|--------|-------|
+| `DOCKER_HUB_USER`  | your Docker Hub username |
+| `DOCKER_HUB_TOKEN` | a Docker Hub [access token](https://hub.docker.com/settings/security) (do **not** use your password) |
 
-生成 Token 步骤：登录 Docker Hub → **Account Settings → Security → New Access Token** →
-权限选 **Read, Write, Delete** → 复制保存。
+Token permissions should be **Read, Write, Delete**.
 
-### 本地拉镜像
+### Pulling the published image
 
 ```bash
 docker pull <your-docker-hub-user>/prep-drs-data:latest
@@ -579,26 +571,43 @@ docker run --rm --gpus all \
   --sample SAMPLE01 --input /in --kit rna004 --output /out
 ```
 
-### 磁盘空间
+### Disk-space note for GitHub-hosted runners
 
-prep-drs 镜像最终约 9–13 GB，而 GitHub Actions 免费 runner 仅 ~14 GB 可用磁盘。
-workflow 里已经加了一步清理 `.NET`/Android SDK 等预装内容以腾出空间。如果你 fork 后
-仍然遇到 "no space left on device"，考虑：
+The final image is ~9–13 GB, while a standard GitHub Actions runner ships
+with ~14 GB free disk. The workflow includes a cleanup step that frees about
+8 GB by removing the pre-installed .NET SDK, Android SDK, GHC, and CodeQL
+bundles. If you fork and still see `no space left on device`, consider:
 
-- 用自建 runner（推荐生产用）
-- 把预下载模型挪出镜像，运行时再挂载
+- using a self-hosted runner (recommended for production use)
+- removing the pre-downloaded models from the image and mounting them at runtime
 
 ---
 
-## 鸣谢
+## Version matrix
+
+| Component | Version |
+|-----------|---------|
+| Docker base | `nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04` |
+| `dorado` (current, RNA004) | 1.4.0 |
+| `dorado-legacy` (RNA001/RNA002) | 0.9.6 (last release that supports RNA002 and fast5 input) |
+| dorado RNA004 models | `rna004_130bps_{fast,hac,sup}@v5.2.0` |
+| dorado RNA002 model | `rna002_70bps_hac@v3` (only `hac` tier exists, downloaded via legacy) |
+| slow5tools | 1.4.0 |
+| blue-crab | pip latest |
+| pod5 | pip latest |
+| NanoPlot | ≥ 1.42.0 |
+
+---
+
+## Acknowledgements
 
 - [Oxford Nanopore Technologies](https://nanoporetech.com/) — dorado, pod5
-- [hasindu2008/slow5tools](https://github.com/hasindu2008/slow5tools) — fast5 → BLOW5 转换与合并
-- [Psy-Fer/blue-crab](https://github.com/Psy-Fer/blue-crab) — pod5 → BLOW5 直接转换
-- [wdecoster/NanoPlot](https://github.com/wdecoster/NanoPlot) — Nanopore reads QC 可视化报告
+- [hasindu2008/slow5tools](https://github.com/hasindu2008/slow5tools) — fast5 → BLOW5 conversion and merging
+- [Psy-Fer/blue-crab](https://github.com/Psy-Fer/blue-crab) — pod5 → BLOW5 direct conversion
+- [wdecoster/NanoPlot](https://github.com/wdecoster/NanoPlot) — Nanopore reads QC visualisation
 
 ---
 
 ## License
 
-见 `LICENSE`。
+See `LICENSE`.
