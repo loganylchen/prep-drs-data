@@ -24,6 +24,7 @@
 13. [流程内部阶段](#流程内部阶段)
 14. [项目结构](#项目结构)
 15. [测试](#测试)
+16. [持续集成 / Docker Hub 自动发布](#持续集成--docker-hub-自动发布)
 
 ---
 
@@ -37,10 +38,17 @@
 │   └── pass.fq.gz              # 合并后的 pass reads（gzip 压缩的 FASTQ）
 ├── blow5/
 │   └── nanopore.drs.blow5      # 合并后的 BLOW5 信号文件
+├── qc/                         # QC 报告（可用 --skip-qc 关闭）
+│   ├── nanoplot/
+│   │   ├── NanoPlot-report.html  # 可视化 QC 报告（在浏览器中打开）
+│   │   ├── NanoStats.txt         # read 数、长度、质量等统计表
+│   │   └── *.png                 # read length / quality 分布图
+│   ├── blow5_stats.txt         # slow5tools stats 输出
+│   └── qc_report.md            # 整合的 Markdown 总结
 └── fast5/    ← 或 pod5/        # 移动（或复制）过来的原始数据
 ```
 
-> 顶层目录名 = 样品名，下一层是 `fastq` / `blow5` / `fast5 或 pod5` 三个子目录，完全符合你提出的要求。
+> 顶层目录名 = 样品名，下一层是 `fastq` / `blow5` / `qc` / `fast5 或 pod5` 四个子目录。
 
 ---
 
@@ -168,6 +176,7 @@ docker run --rm --gpus all \
 | `--zstd` | 关 | BLOW5 使用 zstd 压缩（默认 zlib，兼容性更好） |
 | `--force` | 关 | 即使输出已存在也重跑 |
 | `--keep-tmp` | 关 | 保留中间文件目录 `.tmp`（调试用） |
+| `--skip-qc` | 关 | 跳过 QC 报告生成（NanoPlot + slow5tools stats） |
 | `--help` | — | 打印帮助并退出 |
 
 > **注意 `--sample` 的安全限制**：不允许出现 `/`、`.`、`..`、控制字符。
@@ -259,10 +268,12 @@ cd /path/to/prep-drs-data
 
 | 试剂盒 | 输入 | 必需工具 |
 |--------|------|---------|
-| rna001/rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz` |
-| rna001/rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz` |
-| rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz` |
-| rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz` |
+| rna001/rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz`, `NanoPlot` |
+| rna001/rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
+| rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
+| rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
+
+> `NanoPlot` 仅在不加 `--skip-qc` 时需要。
 
 ---
 
@@ -337,6 +348,40 @@ slow5tools stats /out/SAMPLE01/blow5/nanopore.drs.blow5
 ```bash
 ls /out/SAMPLE01/fast5/ | head    # 或 pod5/
 du -sh /out/SAMPLE01/*/           # 看各子目录大小
+```
+
+### 查看 QC 报告
+
+basecalling + signal conversion 完成后，流程会自动生成 QC 报告到 `<sample>/qc/`：
+
+```
+qc/
+├── nanoplot/
+│   ├── NanoPlot-report.html   # 主报告（在浏览器里打开）
+│   ├── NanoStats.txt          # 读数/长度/质量等关键数字
+│   └── *.png                  # 长度/质量分布图
+├── blow5_stats.txt            # slow5tools stats 的输出
+└── qc_report.md               # 整合 Markdown 总结
+```
+
+快速查看：
+
+```bash
+# 看 Markdown 总结
+cat /out/SAMPLE01/qc/qc_report.md
+
+# 用浏览器打开 HTML 报告
+xdg-open /out/SAMPLE01/qc/nanoplot/NanoPlot-report.html
+```
+
+如果你只想做 basecalling 和信号转换，不想耗时做 QC，可加 `--skip-qc`：
+
+```bash
+docker run --rm --gpus all \
+  -v /data/in:/in:ro -v /data/out:/out \
+  prep-drs:latest \
+  --sample SAMPLE01 --input /in --kit rna004 --output /out \
+  --skip-qc
 ```
 
 ---
@@ -414,6 +459,7 @@ du -sh /out/SAMPLE01/*/           # 看各子目录大小
 | 6 | 信号格式转换失败 |
 | 7 | 完整性检查失败（gzip -t 或 slow5tools quickcheck） |
 | 8 | 原始文件移动/复制失败 |
+| 9 | QC 报告生成失败（NanoPlot 或 slow5tools stats） |
 
 脚本失败后退出码可以直接用于 shell 的 `if [[ $? -eq 5 ]]; then ...; fi` 分支处理。
 
@@ -435,8 +481,9 @@ du -sh /out/SAMPLE01/*/           # 看各子目录大小
 8. **信号转 BLOW5** — fast5 用 `slow5tools f2s`，pod5 用 `blue-crab p2s`
 9. **BLOW5 合并** — `slow5tools merge` 成单文件 `nanopore.drs.blow5`
 10. **BLOW5 完整性检查** — `slow5tools quickcheck`
-11. **原始文件归位** — 把 `*.fast5` 或 `*.pod5` move（默认）或 copy（`--copy`）进 `fast5/`/`pod5/`
-12. **清理** — 删 `.tmp`（除非 `--keep-tmp`），打印耗时与输出清单
+11. **QC 报告** — `NanoPlot` 生成 HTML 报告 + `slow5tools stats`，整合为 `qc/qc_report.md`（可用 `--skip-qc` 关闭）
+12. **原始文件归位** — 把 `*.fast5` 或 `*.pod5` move（默认）或 copy（`--copy`）进 `fast5/`/`pod5/`
+13. **清理** — 删 `.tmp`（除非 `--keep-tmp`），打印耗时与输出清单
 
 ---
 
@@ -448,10 +495,14 @@ prep-drs-data/
 ├── lib/
 │   ├── utils.sh                # 日志、参数解析、GPU/输入检查
 │   ├── basecall.sh             # dorado + dorado-legacy 封装、fast5→pod5 转换
-│   └── signal_convert.sh       # slow5tools + blue-crab 封装、完整性检查
+│   ├── signal_convert.sh       # slow5tools + blue-crab 封装、完整性检查
+│   └── qc.sh                   # NanoPlot + slow5tools stats、qc_report.md 生成
 ├── Dockerfile                  # 所有工具的容器镜像
 ├── .dockerignore
 ├── README.md                   # 本文档
+├── .github/
+│   └── workflows/
+│       └── docker-publish.yml  # GH Actions：自动构建镜像并推送到 Docker Hub
 ├── examples/
 │   └── run_example.sh          # 四个示例调用
 └── test/
@@ -492,6 +543,50 @@ bash test/test_cli.sh
 | slow5tools | 1.4.0 |
 | blue-crab | pip 最新 |
 | pod5 | pip 最新 |
+| NanoPlot | ≥ 1.42.0（pip 安装，用于 QC 报告） |
+
+---
+
+## 持续集成 / Docker Hub 自动发布
+
+仓库根下的 `.github/workflows/docker-publish.yml` 会在以下时机自动构建镜像并推送到 Docker Hub：
+
+- `push` 到 `main` 分支 → 打 `latest` + `main` + `sha-<短SHA>` 标签
+- `push` 带 `v*` 的 git tag（例如 `v1.2.0`）→ 打对应 tag 标签
+- 手动触发（Actions 页面的 **Run workflow** 按钮）
+
+镜像名为 `${DOCKER_HUB_USER}/prep-drs-data`，其中 `DOCKER_HUB_USER` 是仓库 Secret。
+
+### 一次性配置
+
+在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 下新增两个 Secret：
+
+| Secret 名称 | 值 |
+|-------------|------|
+| `DOCKER_HUB_USER`  | 你的 Docker Hub 用户名 |
+| `DOCKER_HUB_TOKEN` | Docker Hub [Access Token](https://hub.docker.com/settings/security)（不要用密码） |
+
+生成 Token 步骤：登录 Docker Hub → **Account Settings → Security → New Access Token** →
+权限选 **Read, Write, Delete** → 复制保存。
+
+### 本地拉镜像
+
+```bash
+docker pull <your-docker-hub-user>/prep-drs-data:latest
+docker run --rm --gpus all \
+  -v /data/in:/in:ro -v /data/out:/out \
+  <your-docker-hub-user>/prep-drs-data:latest \
+  --sample SAMPLE01 --input /in --kit rna004 --output /out
+```
+
+### 磁盘空间
+
+prep-drs 镜像最终约 9–13 GB，而 GitHub Actions 免费 runner 仅 ~14 GB 可用磁盘。
+workflow 里已经加了一步清理 `.NET`/Android SDK 等预装内容以腾出空间。如果你 fork 后
+仍然遇到 "no space left on device"，考虑：
+
+- 用自建 runner（推荐生产用）
+- 把预下载模型挪出镜像，运行时再挂载
 
 ---
 
@@ -500,6 +595,7 @@ bash test/test_cli.sh
 - [Oxford Nanopore Technologies](https://nanoporetech.com/) — dorado, pod5
 - [hasindu2008/slow5tools](https://github.com/hasindu2008/slow5tools) — fast5 → BLOW5 转换与合并
 - [Psy-Fer/blue-crab](https://github.com/Psy-Fer/blue-crab) — pod5 → BLOW5 直接转换
+- [wdecoster/NanoPlot](https://github.com/wdecoster/NanoPlot) — Nanopore reads QC 可视化报告
 
 ---
 

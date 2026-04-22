@@ -22,6 +22,8 @@ source "${LIB_DIR}/utils.sh"
 source "${LIB_DIR}/basecall.sh"
 # shellcheck source=lib/signal_convert.sh
 source "${LIB_DIR}/signal_convert.sh"
+# shellcheck source=lib/qc.sh
+source "${LIB_DIR}/qc.sh"
 
 # ---------------------------------------------------------------------------
 # Cleanup trap
@@ -43,6 +45,10 @@ trap cleanup EXIT
 
 stage_validate_deps() {
   local tools=(slow5tools pigz find)
+
+  if [[ ${SKIP_QC} -eq 0 ]]; then
+    tools+=(NanoPlot)
+  fi
 
   case "${KIT}" in
     rna001|rna002)
@@ -73,12 +79,18 @@ stage_prepare_dirs() {
   TMP_DIR="${SAMPLE_DIR}/.tmp"
   FASTQ_DIR="${SAMPLE_DIR}/fastq"
   BLOW5_DIR="${SAMPLE_DIR}/blow5"
+  QC_DIR="${SAMPLE_DIR}/qc"
   RAW_DIR_NAME="${INPUT_FORMAT}"  # fast5 or pod5
   RAW_DIR="${SAMPLE_DIR}/${RAW_DIR_NAME}"
 
   local final_fq="${FASTQ_DIR}/pass.fq.gz"
   local final_b5="${BLOW5_DIR}/nanopore.drs.blow5"
-  if [[ ${FORCE} -eq 0 && -s "${final_fq}" && -s "${final_b5}" ]]; then
+  local final_qc="${QC_DIR}/qc_report.md"
+  local qc_ok=1
+  if [[ ${SKIP_QC} -eq 0 && ! -s "${final_qc}" ]]; then
+    qc_ok=0
+  fi
+  if [[ ${FORCE} -eq 0 && -s "${final_fq}" && -s "${final_b5}" && ${qc_ok} -eq 1 ]]; then
     log_info "Outputs already exist at ${SAMPLE_DIR}; use --force to re-run. Exiting 0."
     # Disable cleanup trap since we aren't exiting abnormally
     trap - EXIT
@@ -86,6 +98,9 @@ stage_prepare_dirs() {
   fi
 
   mkdir -p "${FASTQ_DIR}" "${BLOW5_DIR}" "${TMP_DIR}" "${RAW_DIR}"
+  if [[ ${SKIP_QC} -eq 0 ]]; then
+    mkdir -p "${QC_DIR}"
+  fi
 }
 
 stage_basecalling() {
@@ -158,6 +173,29 @@ stage_blow5_integrity() {
     || die 7 "blow5 quickcheck failed"
 }
 
+stage_qc() {
+  if [[ ${SKIP_QC} -eq 1 ]]; then
+    log_info "[qc] --skip-qc set; skipping QC report generation"
+    return 0
+  fi
+
+  local fastq_gz="${FASTQ_DIR}/pass.fq.gz"
+  local blow5_file="${BLOW5_DIR}/nanopore.drs.blow5"
+  local nanoplot_dir="${QC_DIR}/nanoplot"
+  local blow5_stats_file="${QC_DIR}/blow5_stats.txt"
+
+  run_nanoplot "${fastq_gz}" "${nanoplot_dir}" "${THREADS}" "${SAMPLE}" \
+    || die 9 "NanoPlot QC failed"
+
+  run_blow5_stats "${blow5_file}" "${blow5_stats_file}" \
+    || die 9 "slow5tools stats failed"
+
+  generate_qc_report \
+    "${SAMPLE}" "${KIT}" "${MODEL_TIER}" \
+    "${fastq_gz}" "${blow5_file}" "${QC_DIR}" \
+    || die 9 "QC report generation failed"
+}
+
 stage_move_raw() {
   log_info "[raw] ${COPY_MODE:+copying}${COPY_MODE:-moving} raw files to ${RAW_DIR}"
   # Use find to handle nested layouts
@@ -189,6 +227,7 @@ main() {
   stage_signal_convert
   stage_blow5_merge
   stage_blow5_integrity
+  stage_qc
   stage_move_raw
 
   local elapsed=$(( SECONDS - start_time ))

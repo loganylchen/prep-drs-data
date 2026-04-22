@@ -67,7 +67,8 @@ RUN set -eux; \
 # ── 6. Python tools ───────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir \
         "pod5>=0.3.0" \
-        "blue-crab>=0.1.0"
+        "blue-crab>=0.1.0" \
+        "NanoPlot>=1.42.0"
 
 # ── 7. Pipeline code (last layer — changes most often) ────────────────────────
 COPY lib/ /usr/local/lib/prep-drs/

@@ -113,11 +113,12 @@ Options:
   --zstd              Use zstd compression for BLOW5
   --force             Re-run even if outputs exist
   --keep-tmp          Preserve .tmp workspace after completion
+  --skip-qc           Skip NanoPlot + slow5tools stats QC report
   --help              Print this help and exit
 
 Exit codes: 0 success, 1 args, 2 missing deps, 3 no GPU,
             4 input error, 5 basecall fail, 6 signal conv fail,
-            7 integrity fail, 8 move/copy fail
+            7 integrity fail, 8 move/copy fail, 9 QC fail
 EOF
 }
 
@@ -138,6 +139,7 @@ parse_args() {
     ZSTD=0
     FORCE=0
     KEEP_TMP=0
+    SKIP_QC=0
 
     while [[ $# -gt 0 ]]; do
         local key="$1"
@@ -184,6 +186,10 @@ parse_args() {
                 ;;
             --keep-tmp)
                 KEEP_TMP=1
+                shift
+                ;;
+            --skip-qc)
+                SKIP_QC=1
                 shift
                 ;;
             --help)
@@ -241,5 +247,5 @@ parse_args() {
         exit 4
     fi
 
-    log_info "Arguments parsed: sample=${SAMPLE} input=${INPUT} kit=${KIT} output=${OUTPUT} threads=${THREADS} model-tier=${MODEL_TIER} device=${DEVICE} copy=${COPY_MODE} zstd=${ZSTD} force=${FORCE} keep-tmp=${KEEP_TMP}"
+    log_info "Arguments parsed: sample=${SAMPLE} input=${INPUT} kit=${KIT} output=${OUTPUT} threads=${THREADS} model-tier=${MODEL_TIER} device=${DEVICE} copy=${COPY_MODE} zstd=${ZSTD} force=${FORCE} keep-tmp=${KEEP_TMP} skip-qc=${SKIP_QC}"
 }
