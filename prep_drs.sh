@@ -64,13 +64,15 @@ stage_validate_deps() {
     tools+=(blue-crab)
   fi
 
-  # fast5 input + rna004 → needs pod5 CLI for fast5→pod5 conversion
-  # (dorado-legacy accepts fast5 natively, so rna001/002 only need pod5 CLI
-  #  when the user opts in via --prefer-pod5)
-  if [[ "${INPUT_FORMAT}" == "fast5" && "${KIT}" == "rna004" ]]; then
-    tools+=(pod5)
-  elif [[ "${INPUT_FORMAT}" == "fast5" && "${PREFER_POD5}" -eq 1 ]]; then
-    tools+=(pod5)
+  # fast5 input + (rna004 OR --prefer-pod5) → goes through fast5->pod5
+  # conversion. The resulting pod5 is reused for BOTH basecalling and
+  # signal-convert (fast5 -> pod5 -> blow5 via blue-crab p2s), bypassing
+  # slow5tools' fast5 reader and its aux-attribute strictness.
+  # That path therefore requires both `pod5` (for the fast5->pod5 step)
+  # and `blue-crab` (for the pod5->blow5 step) on top of the basecaller.
+  if [[ "${INPUT_FORMAT}" == "fast5" ]] \
+       && { [[ "${KIT}" == "rna004" ]] || [[ "${PREFER_POD5}" -eq 1 ]]; }; then
+    tools+=(pod5 blue-crab)
   fi
 
   check_deps "${tools[@]}"
@@ -106,6 +108,39 @@ stage_prepare_dirs() {
   fi
 }
 
+# stage_fast5_to_pod5 — produce a single fast5->pod5 mirror in .tmp/ that
+# both basecalling and signal-convert can reuse. Skips when:
+#   - input is already pod5
+#   - downstream stages don't need pod5 (rna001/002 + fast5 + no --prefer-pod5)
+#   - both final fastq AND blow5 already exist (resume case: nothing to do)
+stage_fast5_to_pod5() {
+  CONVERTED_POD5_DIR=""
+
+  if [[ "${INPUT_FORMAT}" != "fast5" ]]; then
+    return 0
+  fi
+
+  local need_pod5=0
+  if [[ "${KIT}" == "rna004" ]] || [[ ${PREFER_POD5} -eq 1 ]]; then
+    need_pod5=1
+  fi
+  if [[ ${need_pod5} -eq 0 ]]; then
+    return 0
+  fi
+
+  local final_fq="${FASTQ_DIR}/pass.fq.gz"
+  local final_b5="${BLOW5_DIR}/nanopore.drs.blow5"
+  if [[ ${FORCE} -eq 0 && -s "${final_fq}" && -s "${final_b5}" ]]; then
+    log_info "[fast5->pod5] both fastq and blow5 already exist; no pod5 conversion needed"
+    return 0
+  fi
+
+  CONVERTED_POD5_DIR="${TMP_DIR}/pod5_converted"
+  log_info "[fast5->pod5] converting fast5 -> pod5 (shared by basecalling and signal-convert): ${CONVERTED_POD5_DIR}"
+  convert_fast5_to_pod5 "${INPUT}" "${CONVERTED_POD5_DIR}" \
+    || die 5 "fast5->pod5 conversion failed"
+}
+
 stage_basecalling() {
   local basecall_input
   local final_fq="${FASTQ_DIR}/pass.fq.gz"
@@ -118,20 +153,19 @@ stage_basecalling() {
     return 0
   fi
 
+  # If stage_fast5_to_pod5 prepared a converted pod5 mirror, prefer it.
+  # Otherwise fall back to the raw input dir (dorado-legacy can read fast5
+  # natively; dorado >=1.0 cannot, but rna004+fast5 always populates
+  # CONVERTED_POD5_DIR via stage_fast5_to_pod5 so we never reach here with
+  # missing pod5).
+  if [[ -n "${CONVERTED_POD5_DIR:-}" ]]; then
+    basecall_input="${CONVERTED_POD5_DIR}"
+  else
+    basecall_input="${INPUT}"
+  fi
+
   case "${KIT}" in
     rna001|rna002)
-      # dorado-legacy (0.9.6) accepts both fast5 and pod5 natively.
-      # pod5 is typically 15-30% faster on the data-loading path, so if the
-      # user opts in via --prefer-pod5 and the input is fast5, convert first.
-      if [[ "${INPUT_FORMAT}" == "fast5" && "${PREFER_POD5}" -eq 1 ]]; then
-        log_info "[basecall] --prefer-pod5 set: converting fast5 -> pod5 before dorado-legacy"
-        convert_fast5_to_pod5 "${INPUT}" "${TMP_DIR}/pod5_converted" \
-          || die 5 "fast5->pod5 conversion failed"
-        basecall_input="${TMP_DIR}/pod5_converted"
-      else
-        basecall_input="${INPUT}"
-      fi
-
       run_dorado_legacy_basecall \
         "${basecall_input}" \
         "${FASTQ_DIR}/pass.fq.gz" \
@@ -142,16 +176,6 @@ stage_basecalling() {
       ;;
 
     rna004)
-      # Current dorado only accepts pod5 — convert fast5 first if needed.
-      if [[ "${INPUT_FORMAT}" == "fast5" ]]; then
-        log_info "[basecall] fast5 input with dorado — converting fast5 -> pod5 first"
-        convert_fast5_to_pod5 "${INPUT}" "${TMP_DIR}/pod5_converted" \
-          || die 5 "fast5->pod5 conversion failed"
-        basecall_input="${TMP_DIR}/pod5_converted"
-      else
-        basecall_input="${INPUT}"
-      fi
-
       run_dorado_basecall \
         "${basecall_input}" \
         "${FASTQ_DIR}/pass.fq.gz" \
@@ -183,7 +207,15 @@ stage_signal_convert() {
   local parts_dir="${TMP_DIR}/blow5_parts"
   mkdir -p "${parts_dir}"
 
-  if [[ "${INPUT_FORMAT}" == "fast5" ]]; then
+  # If stage_fast5_to_pod5 already produced a pod5 mirror, route signal
+  # conversion through pod5 (blue-crab p2s) instead of slow5tools f2s on the
+  # original fast5. This avoids slow5tools' fast5 reader entirely (no VBZ
+  # plugin reliance, no aux-attribute strictness on guppy-processed data).
+  if [[ -n "${CONVERTED_POD5_DIR:-}" && -d "${CONVERTED_POD5_DIR}" ]]; then
+    log_info "[signal] using converted pod5 mirror at ${CONVERTED_POD5_DIR} (fast5 -> pod5 -> blow5 path)"
+    convert_pod5_to_blow5 "${CONVERTED_POD5_DIR}" "${parts_dir}" "${ZSTD}" \
+      || die 6 "pod5->blow5 failed"
+  elif [[ "${INPUT_FORMAT}" == "fast5" ]]; then
     convert_fast5_to_blow5 "${INPUT}" "${parts_dir}" "${THREADS}" "${ZSTD}" \
       || die 6 "fast5->blow5 failed"
   else
@@ -284,6 +316,7 @@ main() {
 
   stage_validate_deps
   stage_prepare_dirs
+  stage_fast5_to_pod5
   stage_basecalling
   stage_fastq_integrity
   stage_signal_convert
