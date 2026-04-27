@@ -24,8 +24,12 @@ convert_fast5_to_blow5() {
         return 1
     }
 
-    log_info "[signal] Running: slow5tools f2s \"${fast5_dir}\" -d \"${blow5_parts_dir}\" -p \"${threads}\" ${compression[*]}"
-    slow5tools f2s "${fast5_dir}" -d "${blow5_parts_dir}" -p "${threads}" "${compression[@]}" || {
+    # --allow tells slow5tools to skip auxiliary-attribute quirks instead of
+    # aborting the whole conversion. Required for fast5 produced by guppy
+    # (and some other ONT tools) that have run-id conflicts or missing
+    # aux attrs like Raw/start_time. Signal data is unaffected.
+    log_info "[signal] Running: slow5tools f2s \"${fast5_dir}\" -d \"${blow5_parts_dir}\" -p \"${threads}\" --allow ${compression[*]}"
+    slow5tools f2s "${fast5_dir}" -d "${blow5_parts_dir}" -p "${threads}" --allow "${compression[@]}" || {
         log_error "[signal] slow5tools f2s failed"
         return 1
     }
