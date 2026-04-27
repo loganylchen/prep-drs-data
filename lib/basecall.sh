@@ -127,9 +127,9 @@ run_dorado_basecall() {
 # ---------------------------------------------------------------------------
 # convert_fast5_to_pod5 fast5_dir output_pod5_dir
 #
-# Used for the RNA004 + fast5 input case. Current dorado (>=1.0) only accepts
-# pod5, so fast5 must be converted first.
-# NOTE: Assumes a flat directory layout. Nested sub-directories require find.
+# Used for the RNA004 + fast5 input case (and RNA001/RNA002 + --prefer-pod5).
+# Current dorado (>=1.0) only accepts pod5, so fast5 must be converted first.
+# Handles both flat and arbitrarily nested directory layouts via `find`.
 # ---------------------------------------------------------------------------
 convert_fast5_to_pod5() {
     local fast5_dir="${1:?convert_fast5_to_pod5: fast5_dir required}"
@@ -139,12 +139,23 @@ convert_fast5_to_pod5() {
 
     mkdir -p "${output_pod5_dir}"
 
-    local files=( "${fast5_dir}"/*.fast5 )
-    if [[ ! -e "${files[0]}" ]]; then
-        log_error "[basecall] no .fast5 files found in ${fast5_dir}"
+    # Recursive enumeration so nested layouts (e.g. /in/0/*.fast5, /in/1/*.fast5)
+    # work the same as flat /in/*.fast5.
+    local files=()
+    while IFS= read -r -d '' f; do
+        files+=("${f}")
+    done < <(find "${fast5_dir}" -type f -name '*.fast5' -print0)
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        log_error "[basecall] no .fast5 files found in ${fast5_dir} (recursive search)"
         return 1
     fi
 
+    log_info "[basecall] converting ${#files[@]} fast5 file(s) -> pod5"
+
+    # --one-to-one preserves relative paths under fast5_dir, so the output
+    # mirror keeps any sub-directory structure. dorado/dorado-legacy then
+    # recurse it natively.
     pod5 convert fast5 "${files[@]}" \
         --output "${output_pod5_dir}/" \
         --one-to-one "${fast5_dir}/"
