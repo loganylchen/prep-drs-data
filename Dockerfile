@@ -70,13 +70,38 @@ RUN set -eux; \
     ln -sf /opt/slow5tools/slow5tools /usr/local/bin/slow5tools; \
     /usr/local/bin/slow5tools --version
 
-# ── 6. Python tools ───────────────────────────────────────────────────────────
+# ── 6. ONT VBZ HDF5 plugin ────────────────────────────────────────────────────
+# ONT fast5 files since ~2020 are VBZ-compressed by default. dorado/dorado-legacy
+# carry their own decoder, but slow5tools `f2s` reads fast5 via libhdf5 and
+# needs the VBZ filter loaded via HDF5_PLUGIN_PATH. Without this the run
+# explodes mid-conversion with:
+#   [read_dataset::ERROR] The fast5 file is compressed with VBZ but the
+#   required plugin is not loaded.
+# Use the upstream Linux-x86_64 tarball (distro-agnostic) and extract the
+# .so to a stable location, then point HDF5_PLUGIN_PATH at it.
+# Recent ONT releases ship .deb only (no generic Linux tarball), so we extract
+# the .so out of the amd64 deb with dpkg-deb -x rather than `dpkg -i` (avoids
+# pulling in any deb-level deps we don't need).
+ARG VBZ_VERSION=1.0.13
+RUN set -eux; \
+    wget -q -O /tmp/vbz.deb \
+        "https://github.com/nanoporetech/vbz_compression/releases/download/${VBZ_VERSION}/ont-vbz-hdf-plugin_${VBZ_VERSION}_amd64.deb"; \
+    mkdir -p /tmp/vbz_extract /opt/vbz; \
+    dpkg-deb -x /tmp/vbz.deb /tmp/vbz_extract; \
+    so_path="$(find /tmp/vbz_extract -name 'libvbz_hdf_plugin.so' -type f | head -n1)"; \
+    test -n "${so_path}" || { echo "ERROR: libvbz_hdf_plugin.so not found in vbz deb" >&2; exit 1; }; \
+    cp "${so_path}" /opt/vbz/; \
+    rm -rf /tmp/vbz.deb /tmp/vbz_extract; \
+    test -f /opt/vbz/libvbz_hdf_plugin.so
+ENV HDF5_PLUGIN_PATH=/opt/vbz
+
+# ── 7. Python tools ───────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir \
         "pod5>=0.3.0" \
         "blue-crab>=0.1.0" \
         "NanoPlot>=1.42.0"
 
-# ── 7. Pipeline code (last layer — changes most often) ────────────────────────
+# ── 8. Pipeline code (last layer — changes most often) ────────────────────────
 COPY lib/ /usr/local/lib/prep-drs/
 COPY prep_drs.sh /usr/local/bin/prep_drs.sh
 RUN chmod +x /usr/local/bin/prep_drs.sh /usr/local/lib/prep-drs/*.sh || true
