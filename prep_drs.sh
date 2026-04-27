@@ -233,15 +233,41 @@ stage_qc() {
 }
 
 stage_move_raw() {
-  log_info "[raw] ${COPY_MODE:+copying}${COPY_MODE:-moving} raw files to ${RAW_DIR}"
-  # Use find to handle nested layouts
+  # Enumerate first so we can compute the common ancestor of the actual files,
+  # then preserve only the structure below that ancestor. Flat input -> flat
+  # output; batched input (e.g. MinKNOW /in/0, /in/1, ...) -> output keeps
+  # the batch dirs but drops any dead path components above them.
+  local files=()
   while IFS= read -r -d '' f; do
-    if [[ ${COPY_MODE} -eq 1 ]]; then
-      cp "${f}" "${RAW_DIR}/" || die 8 "copy failed: ${f}"
-    else
-      mv "${f}" "${RAW_DIR}/" || die 8 "move failed: ${f}"
-    fi
+    files+=("${f}")
   done < <(find "${INPUT}" -type f \( -name '*.fast5' -o -name '*.pod5' \) -print0)
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    log_warn "[raw] no fast5/pod5 files found under ${INPUT}; nothing to ${COPY_MODE:+copy}${COPY_MODE:-move}"
+    return 0
+  fi
+
+  local ancestor
+  ancestor="$(compute_common_ancestor "${files[@]}")"
+  log_info "[raw] ${COPY_MODE:+copying}${COPY_MODE:-moving} ${#files[@]} raw file(s) to ${RAW_DIR} (preserving paths relative to ${ancestor})"
+
+  local f rel dest dest_dir strip
+  if [[ "${ancestor}" == "/" ]]; then
+    strip="/"
+  else
+    strip="${ancestor}/"
+  fi
+  for f in "${files[@]}"; do
+    rel="${f#${strip}}"
+    dest="${RAW_DIR}/${rel}"
+    dest_dir="$(dirname "${dest}")"
+    mkdir -p "${dest_dir}" || die 8 "mkdir failed: ${dest_dir}"
+    if [[ ${COPY_MODE} -eq 1 ]]; then
+      cp "${f}" "${dest}" || die 8 "copy failed: ${f}"
+    else
+      mv "${f}" "${dest}" || die 8 "move failed: ${f}"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------

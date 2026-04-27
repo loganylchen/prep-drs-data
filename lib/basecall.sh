@@ -151,12 +151,15 @@ convert_fast5_to_pod5() {
         return 1
     fi
 
-    log_info "[basecall] converting ${#files[@]} fast5 file(s) -> pod5"
+    # Use the deepest common ancestor as the --one-to-one root so the output
+    # only mirrors the meaningful sub-directory layout (e.g. MinKNOW per-batch
+    # folders) and drops dead path components above them. If every input file
+    # shares the same parent dir, the output is flat.
+    local ancestor
+    ancestor="$(compute_common_ancestor "${files[@]}")"
+    log_info "[basecall] converting ${#files[@]} fast5 file(s) -> pod5 (one-to-one root: ${ancestor})"
 
-    # --one-to-one preserves relative paths under fast5_dir, so the output
-    # mirror keeps any sub-directory structure. dorado/dorado-legacy then
-    # recurse it natively.
     pod5 convert fast5 "${files[@]}" \
         --output "${output_pod5_dir}/" \
-        --one-to-one "${fast5_dir}/"
+        --one-to-one "${ancestor}/"
 }

@@ -92,6 +92,50 @@ detect_input_format() {
 }
 
 # ---------------------------------------------------------------------------
+# Common ancestor
+# ---------------------------------------------------------------------------
+#
+# compute_common_ancestor PATH...
+#
+# Print the deepest directory that is an ancestor of every input PATH.
+# - If all inputs share the same parent dir, that dir is returned (flat case).
+# - Otherwise, returns the deepest dir below which ALL inputs live.
+#
+# Used to flatten unnecessary nesting in raw-file move/copy and in the
+# fast5->pod5 --one-to-one mirror, so the output structure only carries the
+# meaningful sub-directory layout (e.g. MinKNOW per-batch folders) and not
+# any dead path components above them.
+# ---------------------------------------------------------------------------
+compute_common_ancestor() {
+    [[ $# -eq 0 ]] && return 1
+
+    local prefix
+    prefix="$(dirname "$1")"
+    shift
+
+    local f fd new
+    for f in "$@"; do
+        fd="$(dirname "$f")"
+        while true; do
+            if [[ "$fd" == "$prefix" ]] || [[ "$prefix" == "/" ]]; then
+                break
+            fi
+            if [[ "$fd" == "${prefix}/"* ]]; then
+                break
+            fi
+            new="$(dirname "$prefix")"
+            if [[ "$new" == "$prefix" ]]; then
+                prefix="/"
+                break
+            fi
+            prefix="$new"
+        done
+    done
+
+    printf '%s' "$prefix"
+}
+
+# ---------------------------------------------------------------------------
 # Usage printer
 # ---------------------------------------------------------------------------
 
