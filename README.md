@@ -192,7 +192,7 @@ docker run --rm --gpus all \
 | `--force` | off | re-run even if outputs already exist |
 | `--keep-tmp` | off | keep `.tmp/` workspace (for debugging) |
 | `--skip-qc` | off | skip the NanoPlot + slow5tools stats QC report |
-| `--prefer-pod5` | off | for RNA001/RNA002 + fast5 input, convert fast5→pod5 in `.tmp/` before basecalling. Typically 15–30% faster data loading, but needs extra disk (~= input size). No effect for RNA004 (already pod5) or pod5 input. |
+| `--prefer-pod5` | off | for RNA001/RNA002 + fast5 input, convert fast5→pod5 in `.tmp/` once and reuse the same pod5 mirror for **both** basecalling and signal-conversion (pod5→BLOW5 via `blue-crab p2s`, bypassing slow5tools' fast5 reader). Typically 15–30% faster data loading and avoids guppy fast5 aux-attribute quirks, but needs extra disk (~= input size). No effect for RNA004 (already takes this path automatically) or pod5 input. |
 | `--help` | — | print help and exit |
 
 > **Security note on `--sample`**: the value must be a simple directory name.
@@ -253,7 +253,8 @@ docker run --rm --gpus all \
 ### Scenario 4 — RNA004 with fast5 input (uncommon)
 
 Current `dorado` requires pod5, so the pipeline auto-converts fast5 → pod5
-first:
+first. The same converted pod5 mirror is then fed into `blue-crab p2s` for
+the BLOW5 output, so slow5tools' fast5 reader is bypassed entirely:
 
 ```bash
 docker run --rm --gpus all \
@@ -290,9 +291,10 @@ Which tools are actually required depends on the input format and kit:
 | Kit | Input | Required tools |
 |-----|-------|---------------|
 | rna001 / rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz`, `NanoPlot` |
+| rna001 / rna002 | fast5 + `--prefer-pod5` | `dorado-legacy`, `pod5`, `blue-crab`, `slow5tools`, `pigz`, `NanoPlot` |
 | rna001 / rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
 | rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
-| rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
+| rna004 | fast5 | `dorado`, `pod5`, `blue-crab`, `slow5tools`, `pigz`, `NanoPlot` |
 
 > `NanoPlot` is only needed when `--skip-qc` is not passed.
 
@@ -559,17 +561,18 @@ These are stable, so scripts can branch on them: `if [[ $? -eq 5 ]]; then ...; f
 2. **Dependency & GPU check** — tools depend on kit + input format; `nvidia-smi` must work.
 3. **Input-format detection** — recursive counts of `*.fast5` / `*.pod5`; picks a branch.
 4. **Output directory prep** — creates `fastq/`, `blow5/`, `qc/`, `fast5/` or `pod5/`, `.tmp/`; skips idempotently if outputs already exist (use `--force` to re-run).
-5. **Basecalling**
-   - RNA001 / RNA002 → `dorado-legacy` 0.9.6 (accepts fast5 and pod5 natively, no pre-conversion)
-   - RNA004 → `dorado` 1.4 (auto-converts fast5 → pod5 first if needed)
-6. **FASTQ output** — dorado / dorado-legacy streams `--emit-fastq` through pigz to `pass.fq.gz`.
-7. **FASTQ integrity check** — `gzip -t`.
-8. **Signal → BLOW5** — fast5 via `slow5tools f2s`, pod5 via `blue-crab p2s`.
-9. **BLOW5 merge** — `slow5tools merge` → single `nanopore.drs.blow5`.
-10. **BLOW5 integrity check** — `slow5tools quickcheck`.
-11. **QC report** — `NanoPlot` for the FASTQ + `slow5tools stats` for the BLOW5, consolidated into `qc/qc_report.md` (skip with `--skip-qc`).
-12. **Raw-file placement** — move (default) or `--copy` the original `*.fast5` / `*.pod5` into the `fast5/` / `pod5/` directory.
-13. **Cleanup** — remove `.tmp/` (unless `--keep-tmp`), print wall-clock time and output manifest.
+5. **fast5 → pod5 (when needed)** — for RNA004 + fast5 input, or RNA001/RNA002 + fast5 input + `--prefer-pod5`, convert fast5 → pod5 **once** into `.tmp/pod5_converted/` via `pod5 convert fast5`. The same directory is reused by both basecalling (step 6) and signal-conversion (step 9), so the fast5 reader is touched at most once per run.
+6. **Basecalling**
+   - RNA001 / RNA002 → `dorado-legacy` 0.9.6 (accepts fast5 and pod5 natively; with `--prefer-pod5` it consumes the converted pod5 mirror from step 5)
+   - RNA004 → `dorado` 1.4 (always consumes the converted pod5 mirror from step 5 when input is fast5)
+7. **FASTQ output** — dorado / dorado-legacy streams `--emit-fastq` through pigz to `pass.fq.gz`.
+8. **FASTQ integrity check** — `gzip -t`.
+9. **Signal → BLOW5** — if step 5 produced a pod5 mirror, it is fed into `blue-crab p2s` (fast5 → pod5 → BLOW5 path, bypassing slow5tools' fast5 reader); otherwise fast5 → BLOW5 via `slow5tools f2s --allow`, pod5 → BLOW5 via `blue-crab p2s`.
+10. **BLOW5 merge** — `slow5tools merge` → single `nanopore.drs.blow5`.
+11. **BLOW5 integrity check** — `slow5tools quickcheck`.
+12. **QC report** — `NanoPlot` for the FASTQ + `slow5tools stats` for the BLOW5, consolidated into `qc/qc_report.md` (skip with `--skip-qc`).
+13. **Raw-file placement** — move (default) or `--copy` the original `*.fast5` / `*.pod5` into the `fast5/` / `pod5/` directory.
+14. **Cleanup** — remove `.tmp/` (unless `--keep-tmp`), print wall-clock time and output manifest.
 
 ---
 

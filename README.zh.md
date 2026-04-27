@@ -180,7 +180,7 @@ docker run --rm --gpus all \
 | `--force` | 关 | 即使输出已存在也重跑 |
 | `--keep-tmp` | 关 | 保留中间文件目录 `.tmp`（调试用） |
 | `--skip-qc` | 关 | 跳过 QC 报告生成（NanoPlot + slow5tools stats） |
-| `--prefer-pod5` | 关 | RNA001/RNA002 + fast5 输入时，先在 `.tmp/` 里把 fast5 转成 pod5 再 basecall。数据加载通常快 15–30%，但需额外磁盘（≈ 输入大小）。对 RNA004（已走 pod5）或 pod5 输入无效。 |
+| `--prefer-pod5` | 关 | RNA001/RNA002 + fast5 输入时，在 `.tmp/` 里把 fast5 **只转一次** pod5，basecalling 与信号转换共享同一份 pod5（信号转换走 `blue-crab p2s`，完全绕开 slow5tools 的 fast5 读取）。通常加载快 15–30%，并能避开 guppy fast5 的辅助属性兼容问题，但需额外磁盘（≈ 输入大小）。对 RNA004（已自动走该路径）或 pod5 输入无效。 |
 | `--help` | — | 打印帮助并退出 |
 
 > **注意 `--sample` 的安全限制**：不允许出现 `/`、`.`、`..`、控制字符。
@@ -238,7 +238,7 @@ docker run --rm --gpus all \
 
 ### 场景 4：RNA004 但数据是 fast5（较少见）
 
-流程会自动把 fast5 转成 pod5，再喂给 dorado：
+流程会自动把 fast5 转成 pod5，再喂给 dorado；同一份 pod5 镜像还会被 `blue-crab p2s` 用于生成 BLOW5，整个过程不再触碰 slow5tools 的 fast5 读取：
 
 ```bash
 docker run --rm --gpus all \
@@ -273,9 +273,10 @@ cd /path/to/prep-drs-data
 | 试剂盒 | 输入 | 必需工具 |
 |--------|------|---------|
 | rna001/rna002 | fast5 | `dorado-legacy`, `slow5tools`, `pigz`, `NanoPlot` |
+| rna001/rna002 | fast5 + `--prefer-pod5` | `dorado-legacy`, `pod5`, `blue-crab`, `slow5tools`, `pigz`, `NanoPlot` |
 | rna001/rna002 | pod5 | `dorado-legacy`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
 | rna004 | pod5 | `dorado`, `slow5tools`, `blue-crab`, `pigz`, `NanoPlot` |
-| rna004 | fast5 | `dorado`, `slow5tools`, `pod5`, `pigz`, `NanoPlot` |
+| rna004 | fast5 | `dorado`, `pod5`, `blue-crab`, `slow5tools`, `pigz`, `NanoPlot` |
 
 > `NanoPlot` 仅在不加 `--skip-qc` 时需要。
 
@@ -553,17 +554,18 @@ docker run --rm --gpus all \
 2. **依赖和 GPU 检查** — 根据 kit 和输入格式动态决定要检查哪些工具
 3. **输入格式检测** — 递归统计 `*.fast5` / `*.pod5`，决定走哪条分支
 4. **准备输出目录** — 创建 `fastq/`、`blow5/`、`fast5/` 或 `pod5/`、`.tmp/`；已有输出时幂等跳过（`--force` 可覆盖）
-5. **Basecalling** —
-   - RNA001/RNA002 → `dorado-legacy` 0.9.6（原生支持 fast5 与 pod5，无需预转换）
-   - RNA004 → `dorado` 1.4（若输入是 fast5，先转 pod5）
-6. **FASTQ 输出** — dorado / dorado-legacy 直接以 `--emit-fastq` 管道到 pigz，写成 `pass.fq.gz`
-7. **FASTQ 完整性检查** — `gzip -t`
-8. **信号转 BLOW5** — fast5 用 `slow5tools f2s`，pod5 用 `blue-crab p2s`
-9. **BLOW5 合并** — `slow5tools merge` 成单文件 `nanopore.drs.blow5`
-10. **BLOW5 完整性检查** — `slow5tools quickcheck`
-11. **QC 报告** — `NanoPlot` 生成 HTML 报告 + `slow5tools stats`，整合为 `qc/qc_report.md`（可用 `--skip-qc` 关闭）
-12. **原始文件归位** — 把 `*.fast5` 或 `*.pod5` move（默认）或 copy（`--copy`）进 `fast5/`/`pod5/`
-13. **清理** — 删 `.tmp`（除非 `--keep-tmp`），打印耗时与输出清单
+5. **fast5 → pod5（按需）** — RNA004 + fast5，或 RNA001/RNA002 + fast5 + `--prefer-pod5` 时，**只转一次** fast5 → pod5 到 `.tmp/pod5_converted/`（`pod5 convert fast5`）。这份目录会同时被 basecalling（步骤 6）和信号转换（步骤 9）使用，整个 run 中 fast5 reader 最多只触碰一次
+6. **Basecalling** —
+   - RNA001/RNA002 → `dorado-legacy` 0.9.6（原生支持 fast5 与 pod5；带 `--prefer-pod5` 时消费步骤 5 转好的 pod5）
+   - RNA004 → `dorado` 1.4（输入是 fast5 时一定走步骤 5 转好的 pod5）
+7. **FASTQ 输出** — dorado / dorado-legacy 直接以 `--emit-fastq` 管道到 pigz，写成 `pass.fq.gz`
+8. **FASTQ 完整性检查** — `gzip -t`
+9. **信号转 BLOW5** — 若步骤 5 已经产生 pod5 镜像，则用 `blue-crab p2s` 把 pod5 转成 BLOW5（fast5 → pod5 → BLOW5 路径，绕开 slow5tools 的 fast5 reader）；否则 fast5 走 `slow5tools f2s --allow`，pod5 走 `blue-crab p2s`
+10. **BLOW5 合并** — `slow5tools merge` 成单文件 `nanopore.drs.blow5`
+11. **BLOW5 完整性检查** — `slow5tools quickcheck`
+12. **QC 报告** — `NanoPlot` 生成 HTML 报告 + `slow5tools stats`，整合为 `qc/qc_report.md`（可用 `--skip-qc` 关闭）
+13. **原始文件归位** — 把 `*.fast5` 或 `*.pod5` move（默认）或 copy（`--copy`）进 `fast5/`/`pod5/`
+14. **清理** — 删 `.tmp`（除非 `--keep-tmp`），打印耗时与输出清单
 
 ---
 
